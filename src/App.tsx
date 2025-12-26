@@ -1,5 +1,90 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import TickerPicker from "./components/TickerPicker";
+
+type UniverseRow = {
+  ticker: string;
+  name: string;
+  assetClass: string;
+  riskBucket: string;
+};
+
+type PricesDemo = {
+  dates: string[];
+  series: Record<string, number[]>;
+};
+
+function DataSmokeTest() {
+  const [status, setStatus] = useState<
+    | { ok: true; tickers: number; universe: number; pricesDates: number; pricesSeries: number }
+    | { ok: false; message: string }
+    | null
+  >(null);
+
+  useEffect(() => {
+    const base = import.meta.env.BASE_URL || "/";
+    const u1 = `${base}data/tickers.json`;
+    const u2 = `${base}data/universe.json`;
+    const u3 = `${base}data/prices_demo.json`;
+
+    (async () => {
+      try {
+        const [r1, r2, r3] = await Promise.all([fetch(u1), fetch(u2), fetch(u3)]);
+        if (!r1.ok || !r2.ok || !r3.ok) {
+          throw new Error(
+            `Fetch failed: tickers=${r1.status} universe=${r2.status} prices=${r3.status} (base=${base})`
+          );
+        }
+
+        const tickers = (await r1.json()) as unknown[];
+        const universe = (await r2.json()) as UniverseRow[];
+        const prices = (await r3.json()) as PricesDemo;
+
+        const pricesSeries = prices?.series ? Object.keys(prices.series).length : 0;
+        const pricesDates = prices?.dates ? prices.dates.length : 0;
+
+        setStatus({
+          ok: true,
+          tickers: tickers.length,
+          universe: universe.length,
+          pricesDates,
+          pricesSeries,
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setStatus({ ok: false, message: msg });
+      }
+    })();
+  }, []);
+
+  return (
+    <div className="rounded-2xl border border-border bg-panel p-4 shadow-soft">
+      <h3 className="text-sm font-semibold">Data</h3>
+      {!status && <div className="mt-2 text-xs text-muted">Loading static JSON…</div>}
+      {status?.ok && (
+        <div className="mt-2 text-xs text-muted">
+          <div>
+            Loaded <span className="font-mono">tickers.json</span>: {status.tickers} rows
+          </div>
+          <div>
+            Loaded <span className="font-mono">universe.json</span>: {status.universe} rows
+          </div>
+          <div>
+            Loaded <span className="font-mono">prices_demo.json</span>: {status.pricesSeries} series ·{" "}
+            {status.pricesDates} dates
+          </div>
+        </div>
+      )}
+      {status && !status.ok && (
+        <div className="mt-2 text-xs text-red-600">
+          Data load failed: <span className="font-mono">{status.message}</span>
+        </div>
+      )}
+      <div className="mt-3 text-[11px] text-muted">
+        Public path: <span className="font-mono">{import.meta.env.BASE_URL || "/"}</span>
+      </div>
+    </div>
+  );
+}
 
 export default function App() {
   const [tickers, setTickers] = useState<string[]>(["AAPL", "MSFT"]);
@@ -48,9 +133,7 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="text-xs text-muted">
-                Data pipeline (next): static JSON under <span className="font-mono">/public/data</span>.
-              </div>
+              <DataSmokeTest />
             </div>
           </aside>
 
