@@ -1,4 +1,13 @@
+import { useMemo, useState } from "react";
+import TickerPicker from "./components/TickerPicker";
+
 export default function App() {
+  const [tickers, setTickers] = useState<string[]>(["AAPL", "MSFT"]);
+
+  const weights = useMemo(() => {
+    const n = tickers.length || 1;
+    return tickers.map((t) => ({ ticker: t, w: 1 / n }));
+  }, [tickers]);
   return (
     <div className="min-h-screen bg-panel text-ink font-sans">
       <div className="mx-auto max-w-7xl px-6 py-6">
@@ -14,18 +23,29 @@ export default function App() {
               </div>
 
               <div className="rounded-2xl border border-border bg-panel p-4 shadow-soft">
-                <h3 className="text-sm font-semibold">Ticker picker</h3>
-                <div className="mt-3 h-10 rounded-xl bg-wash" />
+                <TickerPicker value={tickers} onChange={setTickers} />
               </div>
 
               <div className="rounded-2xl border border-border bg-panel p-4 shadow-soft">
                 <h3 className="text-sm font-semibold">Selected tickers</h3>
-                <div className="mt-3 h-40 rounded-xl bg-wash" />
+                <div className="mt-3 space-y-2">
+                  {weights.map((x) => (
+                    <div
+                      key={x.ticker}
+                      className="flex items-center justify-between rounded-xl bg-wash px-3 py-2"
+                    >
+                      <div className="font-mono text-sm">{x.ticker}</div>
+                      <div className="font-mono text-sm text-muted">{(x.w * 100).toFixed(1)}%</div>
+                    </div>
+                  ))}
+                </div>
               </div>
 
               <div className="rounded-2xl border border-border bg-panel p-4 shadow-soft">
                 <h3 className="text-sm font-semibold">Weights</h3>
-                <div className="mt-3 h-40 rounded-xl bg-wash" />
+                <div className="mt-3 text-xs text-muted">
+                  Next: absolute shares + % sliders (auto-normalized).
+                </div>
               </div>
 
               <div className="text-xs text-muted">
