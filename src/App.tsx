@@ -336,6 +336,409 @@ function PriceDemoChart({
   );
 }
 
+function BenchmarkAndWinnersCard({
+  portfolioTickers,
+  portfolioWeights,
+  portfolio,
+  portfolioKpi,
+}: {
+  portfolioTickers: string[];
+  portfolioWeights: { ticker: string; w: number }[];
+  portfolio: number[] | null;
+  portfolioKpi: KPI | null;
+}) {
+  const [universe, setUniverse] = useState<UniverseRow[] | null>(null);
+  const [prices, setPrices] = useState<PricesDemo | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  const BENCH_CANDIDATES: { ticker: string; label: string }[] = [
+    { ticker: "SPY", label: "SPY · S&P 500" },
+    { ticker: "QQQ", label: "QQQ · Nasdaq 100" },
+    { ticker: "VT", label: "VT · Global equities" },
+    { ticker: "VEA", label: "VEA · Developed ex-US" },
+    { ticker: "EEM", label: "EEM · Emerging markets" },
+    { ticker: "AGG", label: "AGG · US bonds" },
+    { ticker: "GLD", label: "GLD · Gold" },
+  ];
+
+  const [benchmark, setBenchmark] = useState<string>("SPY");
+
+  useEffect(() => {
+    const base = import.meta.env.BASE_URL || "/";
+    const uUniverse = `${base}data/universe.json`;
+    const uPrices = `${base}data/prices_demo.json`;
+
+    (async () => {
+      try {
+        setErr(null);
+        const [rU, rP] = await Promise.all([fetch(uUniverse), fetch(uPrices)]);
+        if (!rU.ok || !rP.ok) {
+          throw new Error(
+            `Fetch failed: universe=${rU.status} prices=${rP.status} (base=${base})`
+          );
+        }
+        setUniverse((await rU.json()) as UniverseRow[]);
+        setPrices((await rP.json()) as PricesDemo);
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : String(e));
+        setUniverse(null);
+        setPrices(null);
+      }
+    })();
+  }, []);
+
+  const uniMap = useMemo(() => {
+    const m = new Map<string, UniverseRow>();
+    for (const r of universe ?? []) m.set(r.ticker.toUpperCase(), r);
+    return m;
+  }, [universe]);
+
+  const availableBench = useMemo(() => {
+    if (!prices) return [] as { ticker: string; label: string }[];
+    const s = prices.series ?? {};
+    const filtered = BENCH_CANDIDATES.filter((b) => b.ticker in s);
+    if (filtered.length > 0) return filtered;
+
+    const keys = Object.keys(s).slice(0, 6);
+    return keys.map((k) => ({ ticker: k, label: `${k} · (demo series)` }));
+  }, [prices]);
+
+  useEffect(() => {
+    if (!availableBench.length) return;
+    if (!availableBench.some((b) => b.ticker === benchmark)) {
+      setBenchmark(availableBench[0].ticker);
+    }
+  }, [availableBench, benchmark]);
+
+  const inferredRiskBucket = useMemo(() => {
+    if (!portfolioWeights.length) return "—";
+
+    const byBucket = new Map<string, number>();
+    for (const w of portfolioWeights) {
+      const bucket = uniMap.get(w.ticker)?.riskBucket ?? "Unknown";
+      byBucket.set(bucket, (byBucket.get(bucket) ?? 0) + w.w);
+    }
+
+    let best = "Unknown";
+    let bestW = -1;
+    for (const [b, w] of byBucket.entries()) {
+      if (w > bestW) {
+        bestW = w;
+        best = b;
+      }
+    }
+    return best;
+  }, [portfolioWeights, uniMap]);
+
+  const benchIdx = useMemo(() => {
+    if (!prices) return null as null | number[];
+    const y = prices.series?.[benchmark];
+    if (!y || y.length < 2) return null;
+    const base = y[0] ?? 1;
+    return y.map((v) => (base ? (v / base) * 100 : v));
+  }, [prices, benchmark]);
+
+  const benchKpi = useMemo(() => {
+    if (!prices || !benchIdx) return null as null | KPI;
+    return kpisFromIndex(benchIdx, prices.dates);
+  }, [prices, benchIdx]);
+
+  const winners = useMemo(() => {
+    if (!prices || !universe) return [] as (UniverseRow & { kpi: KPI })[];
+
+    const s = prices.series ?? {};
+    const portfolioSet = new Set(portfolioTickers.map((t) => t.toUpperCase()));
+
+    const candidates = universe
+      .map((r) => ({ ...r, ticker: r.ticker.toUpperCase() }))
+      .filter((r) => r.riskBucket === inferredRiskBucket)
+      .filter((r) => r.ticker in s)
+      .filter((r) => !portfolioSet.has(r.ticker))
+      .filter((r) => r.ticker !== benchmark);
+
+    const scored = candidates
+      .map((r) => {
+        const y = s[r.ticker] ?? [];
+        const base = y[0] ?? 1;
+        const idx = y.map((v) => (base ? (v / base) * 100 : v));
+        const kpi = kpisFromIndex(idx, prices.dates);
+        return { ...r, kpi };
+      })
+      .filter((r) => Number.isFinite(r.kpi.totalReturn));
+
+    scored.sort((a, b) => b.kpi.totalReturn - a.kpi.totalReturn);
+
+    const beat =
+      portfolioKpi?.totalReturn != null
+        ? scored.filter((r) => r.kpi.totalReturn > portfolioKpi.totalReturn)
+        : [];
+
+    return (beat.length ? beat : scored).slice(0, 5);
+  }, [prices, universe, inferredRiskBucket, portfolioTickers, benchmark, portfolioKpi]);
+
+  const combined = useMemo(() => {
+    if (!prices) return null as null | { dates: string[]; port: number[]; bench: number[] };
+    if (!portfolio || !benchIdx) return null;
+
+    // Keep lengths aligned to the shortest series.
+    const n = Math.min(prices.dates.length, portfolio.length, benchIdx.length);
+    if (n < 2) return null;
+
+    return {
+      dates: prices.dates.slice(0, n),
+      port: portfolio.slice(0, n),
+      bench: benchIdx.slice(0, n),
+    };
+  }, [prices, portfolio, benchIdx]);
+
+  const cmpClass = (a: number | null | undefined, b: number | null | undefined, higherIsBetter = true) => {
+    if (a == null || b == null) return "text-ink";
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return "text-ink";
+    if (Math.abs(a - b) < 1e-12) return "text-ink";
+    const better = higherIsBetter ? a > b : a < b;
+    return better ? "text-emerald-600" : "text-rose-600";
+  };
+
+  const portCagrCls = cmpClass(portfolioKpi?.cagr ?? null, benchKpi?.cagr ?? null, true);
+  const benchCagrCls = cmpClass(benchKpi?.cagr ?? null, portfolioKpi?.cagr ?? null, true);
+  // Max drawdown is negative: a value closer to 0 is better, so “higher is better”.
+  const portDdCls = cmpClass(portfolioKpi?.maxDrawdown ?? null, benchKpi?.maxDrawdown ?? null, true);
+  const benchDdCls = cmpClass(benchKpi?.maxDrawdown ?? null, portfolioKpi?.maxDrawdown ?? null, true);
+
+  return (
+    <div className="mt-3">
+      {err && (
+        <div className="text-xs text-red-600">
+          Data load failed: <span className="font-mono">{err}</span>
+        </div>
+      )}
+
+      {!err && (!prices || !universe) && <div className="text-xs text-muted">Loading…</div>}
+
+      {!err && prices && universe && (
+        <>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="text-[11px] text-muted">
+              Risk bucket inferred from current portfolio:{" "}
+              <span className="ml-1 rounded-full border border-border bg-wash px-2 py-0.5 font-mono text-ink">
+                {inferredRiskBucket}
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <div className="text-xs text-muted">Benchmark</div>
+              <select
+                className="rounded-xl border border-border bg-panel px-3 py-2 text-sm"
+                value={benchmark}
+                onChange={(e) => setBenchmark(e.target.value)}
+              >
+                {availableBench.map((b) => (
+                  <option key={b.ticker} value={b.ticker}>
+                    {b.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="mt-4 rounded-xl bg-wash p-3">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <div className="text-xs font-semibold">Portfolio vs benchmark</div>
+                <div className="mt-1 text-[11px] text-muted">
+                  Both series are normalized to 100 at the first date for easier comparison.
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3 text-[11px] text-muted">
+                <div className="flex items-center gap-2">
+                  <span className="inline-block h-[2px] w-6 rounded-full bg-ink" />
+                  <span>Portfolio</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span
+                    className="inline-block h-[2px] w-6 rounded-full"
+                    style={{
+                      backgroundImage:
+                        "repeating-linear-gradient(to right, #2563EB 0 8px, transparent 8px 14px)",
+                    }}
+                  />
+                  <span>Benchmark</span>
+                </div>
+              </div>
+            </div>
+
+            {!combined ? (
+              <div className="mt-3 text-xs text-muted">
+                Select tickers (and a benchmark that exists in the demo dataset) to render a comparison.
+              </div>
+            ) : (
+              (() => {
+                const viewW = 760;
+                const viewH = 180;
+                const left = 52;
+                const right = 18;
+                const top = 14;
+                const bottom = 26;
+                const W = viewW - left - right;
+                const H = viewH - top - bottom;
+
+                const dates = combined.dates;
+                const port = combined.port;
+                const bench = combined.bench;
+
+                const all = [...port, ...bench].filter((x) => Number.isFinite(x));
+                const ymin0 = Math.min(...all);
+                const ymax0 = Math.max(...all);
+                const pad = (ymax0 - ymin0) * 0.04;
+                const ymin = ymin0 - pad;
+                const ymax = ymax0 + pad;
+
+                const x = (i: number) => left + (i / Math.max(1, dates.length - 1)) * W;
+                const y = (v: number) => top + (1 - (v - ymin) / (ymax - ymin || 1)) * H;
+
+                const yTicks = [0, 0.5, 1].map((p) => ymin + p * (ymax - ymin));
+
+                const dPort = port
+                  .map((v, i) => `${i === 0 ? "M" : "L"} ${x(i).toFixed(2)} ${y(v).toFixed(2)}`)
+                  .join(" ");
+                const dBench = bench
+                  .map((v, i) => `${i === 0 ? "M" : "L"} ${x(i).toFixed(2)} ${y(v).toFixed(2)}`)
+                  .join(" ");
+
+                return (
+                  <svg viewBox={`0 0 ${viewW} ${viewH}`} className="mt-3 w-full">
+                    {/* frame */}
+                    <line x1={left} y1={top + H} x2={left + W} y2={top + H} stroke="#E5E7EB" />
+                    <line x1={left} y1={top} x2={left} y2={top + H} stroke="#E5E7EB" />
+
+                    {/* y grid + labels */}
+                    {yTicks.map((tv, k) => (
+                      <g key={k}>
+                        <line x1={left} y1={y(tv)} x2={left + W} y2={y(tv)} stroke="#F3F4F6" />
+                        <text x={left - 8} y={y(tv) + 4} textAnchor="end" fontSize="10" fill="#4B5563">
+                          {tv.toFixed(0)}
+                        </text>
+                      </g>
+                    ))}
+
+                    {/* x labels (start/end) */}
+                    <text x={left} y={top + H + 18} fontSize="10" fill="#4B5563">
+                      {dates[0]}
+                    </text>
+                    <text x={left + W} y={top + H + 18} textAnchor="end" fontSize="10" fill="#4B5563">
+                      {dates[dates.length - 1]}
+                    </text>
+
+                    {/* benchmark (dashed) */}
+                    <path
+                      d={dBench}
+                      fill="none"
+                      stroke="#2563EB"
+                      strokeWidth="2"
+                      strokeDasharray="6 4"
+                      opacity="0.95"
+                    />
+
+                    {/* portfolio (solid) */}
+                    <path d={dPort} fill="none" stroke="#111827" strokeWidth="2.5" opacity="0.95" />
+                  </svg>
+                );
+              })()
+            )}
+
+            <div className="mt-3 grid grid-cols-2 gap-3">
+              <div className="rounded-xl bg-panel px-3 py-2">
+                <div className="text-[11px] text-muted">Portfolio total</div>
+                <div className="mt-1 font-mono text-sm text-ink">
+                  {portfolioKpi ? formatPct(portfolioKpi.totalReturn) : "—"}
+                </div>
+              </div>
+              <div className="rounded-xl bg-panel px-3 py-2">
+                <div className="text-[11px] text-muted">Benchmark total</div>
+                <div className="mt-1 font-mono text-sm text-ink">
+                  {benchKpi ? formatPct(benchKpi.totalReturn) : "—"}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {(portfolioKpi || benchKpi) && (
+            <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <div className="rounded-xl bg-wash px-3 py-2">
+                <div className="text-[11px] text-muted">Portfolio CAGR</div>
+                <div className={`mt-1 font-mono text-sm ${portCagrCls}`}>
+                  {portfolioKpi ? formatPct(portfolioKpi.cagr) : "—"}
+                </div>
+              </div>
+              <div className="rounded-xl bg-wash px-3 py-2">
+                <div className="text-[11px] text-muted">Benchmark CAGR</div>
+                <div className={`mt-1 font-mono text-sm ${benchCagrCls}`}>
+                  {benchKpi ? formatPct(benchKpi.cagr) : "—"}
+                </div>
+              </div>
+              <div className="rounded-xl bg-wash px-3 py-2">
+                <div className="text-[11px] text-muted">Portfolio max DD</div>
+                <div className={`mt-1 font-mono text-sm ${portDdCls}`}>
+                  {portfolioKpi ? formatPct(portfolioKpi.maxDrawdown) : "—"}
+                </div>
+              </div>
+              <div className="rounded-xl bg-wash px-3 py-2">
+                <div className="text-[11px] text-muted">Benchmark max DD</div>
+                <div className={`mt-1 font-mono text-sm ${benchDdCls}`}>
+                  {benchKpi ? formatPct(benchKpi.maxDrawdown) : "—"}
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="mt-5">
+            <div className="text-xs font-semibold">Similar-risk winners</div>
+            <div className="mt-1 text-[11px] text-muted">
+              Top performers in the same <span className="font-mono">riskBucket</span> ({inferredRiskBucket}) that
+              outperform the current portfolio (when possible).
+            </div>
+
+            {winners.length === 0 ? (
+              <div className="mt-3 text-xs text-muted">No comparable tickers found in the current demo dataset.</div>
+            ) : (
+              <div className="mt-3 overflow-hidden rounded-xl border border-border">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-wash text-[11px] text-muted">
+                    <tr>
+                      <th className="px-3 py-2">Ticker</th>
+                      <th className="px-3 py-2">Name</th>
+                      <th className="px-3 py-2">Total</th>
+                      <th className="px-3 py-2">CAGR</th>
+                      <th className="px-3 py-2">Max DD</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {winners.map((r) => (
+                      <tr key={r.ticker} className="border-t border-border">
+                        <td className="px-3 py-2 font-mono">{r.ticker}</td>
+                        <td className="px-3 py-2">{r.name}</td>
+                        <td className="px-3 py-2 font-mono">{formatPct(r.kpi.totalReturn)}</td>
+                        <td className="px-3 py-2 font-mono">{formatPct(r.kpi.cagr)}</td>
+                        <td className="px-3 py-2 font-mono">{formatPct(r.kpi.maxDrawdown)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          <div className="mt-4 text-[11px] text-muted">
+            Demo logic uses <span className="font-mono">universe.json</span> (risk buckets) +{" "}
+            <span className="font-mono">prices_demo.json</span> (static prices). Next: replace with real historical data.
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   type Holding = { ticker: string; shares: number };
 
@@ -556,7 +959,12 @@ export default function App() {
 
               <section className="col-span-12 rounded-2xl border border-border bg-panel p-4 shadow-soft">
                 <h3 className="text-sm font-semibold">Benchmark and similar-risk winners</h3>
-                <div className="mt-3 h-56 rounded-xl bg-wash" />
+                <BenchmarkAndWinnersCard
+                  portfolioTickers={tickers}
+                  portfolioWeights={weights}
+                  portfolio={computed?.portfolio ?? null}
+                  portfolioKpi={computed?.kpi ?? null}
+                />
               </section>
             </div>
 
