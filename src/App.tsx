@@ -13,6 +13,39 @@ type PricesDemo = {
   series: Record<string, number[]>;
 };
 
+type KPI = { totalReturn: number; cagr: number; maxDrawdown: number };
+
+function formatPct(x: number) {
+  const v = x * 100;
+  const s = (Math.round(v * 10) / 10).toFixed(1);
+  return `${s}%`;
+}
+
+function kpisFromIndex(series: number[], dates: string[]): KPI {
+  if (!series || series.length < 2 || !dates || dates.length < 2) {
+    return { totalReturn: 0, cagr: 0, maxDrawdown: 0 };
+  }
+
+  const v0 = series[0];
+  const v1 = series[series.length - 1];
+  const totalReturn = v0 > 0 ? v1 / v0 - 1 : 0;
+
+  const d0 = new Date(dates[0]).getTime();
+  const d1 = new Date(dates[dates.length - 1]).getTime();
+  const years = Math.max((d1 - d0) / (1000 * 60 * 60 * 24 * 365.25), 1 / 365.25);
+  const cagr = Math.pow(1 + totalReturn, 1 / years) - 1;
+
+  let peak = series[0];
+  let maxDD = 0;
+  for (const v of series) {
+    if (v > peak) peak = v;
+    const dd = peak > 0 ? v / peak - 1 : 0;
+    if (dd < maxDD) maxDD = dd;
+  }
+
+  return { totalReturn, cagr, maxDrawdown: maxDD };
+}
+
 function DataSmokeTest() {
   const [status, setStatus] = useState<
     | { ok: true; tickers: number; universe: number; pricesDates: number; pricesSeries: number }
@@ -143,6 +176,11 @@ function PriceDemoChart({
     return out;
   }, [data, series, weights]);
 
+  const kpi = useMemo(() => {
+    if (!data || !portfolio) return null as null | KPI;
+    return kpisFromIndex(portfolio, data.dates);
+  }, [data, portfolio]);
+
   if (err) {
     return (
       <div className="mt-3 text-xs text-red-600">
@@ -262,7 +300,24 @@ function PriceDemoChart({
         )}
       </svg>
 
-      <div className="mt-2 text-[11px] text-muted">
+      {kpi && (
+        <div className="mt-4 grid grid-cols-3 gap-3">
+          <div className="rounded-xl bg-wash px-3 py-2">
+            <div className="text-[11px] text-muted">Total return</div>
+            <div className="mt-1 font-mono text-sm text-ink">{formatPct(kpi.totalReturn)}</div>
+          </div>
+          <div className="rounded-xl bg-wash px-3 py-2">
+            <div className="text-[11px] text-muted">CAGR</div>
+            <div className="mt-1 font-mono text-sm text-ink">{formatPct(kpi.cagr)}</div>
+          </div>
+          <div className="rounded-xl bg-wash px-3 py-2">
+            <div className="text-[11px] text-muted">Max drawdown</div>
+            <div className="mt-1 font-mono text-sm text-ink">{formatPct(kpi.maxDrawdown)}</div>
+          </div>
+        </div>
+      )}
+
+      <div className="mt-3 text-[11px] text-muted">
         Demo data only (static). Next: real returns, benchmarks, and risk metrics.
       </div>
     </div>

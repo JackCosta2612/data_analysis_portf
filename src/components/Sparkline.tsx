@@ -1,5 +1,3 @@
-import React from "react";
-
 type Pt = { value: number };
 
 function pathFrom(values: number[], w: number, h: number, pad = 2) {
