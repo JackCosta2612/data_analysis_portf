@@ -1,0 +1,13 @@
+[
+  { "ticker": "AAPL", "name": "Apple", "assetClass": "Equity", "region": "US", "sector": "Technology" },
+  { "ticker": "MSFT", "name": "Microsoft", "assetClass": "Equity", "region": "US", "sector": "Technology" },
+  { "ticker": "NVDA", "name": "NVIDIA", "assetClass": "Equity", "region": "US", "sector": "Technology" },
+  { "ticker": "AMZN", "name": "Amazon", "assetClass": "Equity", "region": "US", "sector": "Consumer Discretionary" },
+  { "ticker": "GOOGL", "name": "Alphabet", "assetClass": "Equity", "region": "US", "sector": "Communication Services" },
+  { "ticker": "TSLA", "name": "Tesla", "assetClass": "Equity", "region": "US", "sector": "Consumer Discretionary" },
+  { "ticker": "JPM", "name": "JPMorgan Chase", "assetClass": "Equity", "region": "US", "sector": "Financials" },
+  { "ticker": "JNJ", "name": "Johnson & Johnson", "assetClass": "Equity", "region": "US", "sector": "Health Care" },
+  { "ticker": "XOM", "name": "Exxon Mobil", "assetClass": "Equity", "region": "US", "sector": "Energy" },
+  { "ticker": "V", "name": "Visa", "assetClass": "Equity", "region": "US", "sector": "Financials" },
+  { "ticker": "SPY", "name": "S&P 500 ETF", "assetClass": "ETF", "region": "US", "sector": "Index" }
+]
