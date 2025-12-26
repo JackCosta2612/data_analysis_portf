@@ -270,12 +270,52 @@ function PriceDemoChart({
 }
 
 export default function App() {
+  type Holding = { ticker: string; shares: number };
+
   const [tickers, setTickers] = useState<string[]>(["AAPL", "MSFT"]);
+  const [holdings, setHoldings] = useState<Holding[]>([
+    { ticker: "AAPL", shares: 1 },
+    { ticker: "MSFT", shares: 1 },
+  ]);
+
+  // keep holdings in sync with ticker picker:
+  // - when a ticker is added: default shares=1
+  // - when removed: drop its holding
+  useEffect(() => {
+    setHoldings((prev) => {
+      const prevMap = new Map(prev.map((h) => [h.ticker, h.shares] as const));
+
+      const next = tickers.map((t) => ({
+        ticker: t,
+        shares: prevMap.get(t) ?? 1,
+      }));
+
+      // if a ticker was added and no prior shares existed, apply equidistribution ONLY if
+      // all existing shares were still at the default 1 (i.e., user hasn’t edited yet)
+      const prevTickers = prev.map((h) => h.ticker);
+      const added = tickers.filter((t) => !prevTickers.includes(t));
+
+      if (added.length > 0) {
+        const userEdited = prev.some((h) => h.shares !== 1);
+        if (!userEdited) {
+          // reset all to 1 (equal by shares)
+          return next.map((h) => ({ ...h, shares: 1 }));
+        }
+      }
+
+      return next;
+    });
+  }, [tickers]);
+
+  const totalShares = useMemo(
+    () => holdings.reduce((s, h) => s + (Number.isFinite(h.shares) ? h.shares : 0), 0),
+    [holdings]
+  );
 
   const weights = useMemo(() => {
-    const n = tickers.length || 1;
-    return tickers.map((t) => ({ ticker: t, w: 1 / n }));
-  }, [tickers]);
+    const denom = totalShares || 1;
+    return holdings.map((h) => ({ ticker: h.ticker, w: h.shares / denom }));
+  }, [holdings, totalShares]);
   return (
     <div className="min-h-screen bg-panel text-ink font-sans">
       <div className="mx-auto max-w-7xl px-6 py-6">
@@ -295,17 +335,46 @@ export default function App() {
               </div>
 
               <div className="rounded-2xl border border-border bg-panel p-4 shadow-soft">
-                <h3 className="text-sm font-semibold">Selected tickers</h3>
+                <h3 className="text-sm font-semibold">Weights editor</h3>
+                <p className="mt-1 text-xs text-muted">Edit shares (left). % updates automatically.</p>
+
                 <div className="mt-3 space-y-2">
-                  {weights.map((x) => (
-                    <div
-                      key={x.ticker}
-                      className="flex items-center justify-between rounded-xl bg-wash px-3 py-2"
-                    >
-                      <div className="font-mono text-sm">{x.ticker}</div>
-                      <div className="font-mono text-sm text-muted">{(x.w * 100).toFixed(1)}%</div>
-                    </div>
-                  ))}
+                  {holdings.map((h) => {
+                    const pct = (h.shares / (totalShares || 1)) * 100;
+
+                    return (
+                      <div key={h.ticker} className="rounded-xl bg-wash px-3 py-2">
+                        <div className="flex items-center justify-between">
+                          <div className="font-mono text-sm">{h.ticker}</div>
+                          <div className="font-mono text-sm text-muted">{pct.toFixed(1)}%</div>
+                        </div>
+
+                        <div className="mt-2 flex items-center gap-3">
+                          <label className="text-xs text-muted">Shares</label>
+                          <input
+                            className="w-24 rounded-lg border border-border bg-panel px-2 py-1 font-mono text-sm"
+                            type="number"
+                            min={0}
+                            step={1}
+                            value={h.shares}
+                            onChange={(e) => {
+                              const v = Math.max(0, Math.round(Number(e.target.value || 0)));
+                              setHoldings((prev) =>
+                                prev.map((x) => (x.ticker === h.ticker ? { ...x, shares: v } : x))
+                              );
+                            }}
+                          />
+                          <div className="text-xs text-muted">
+                            Total shares: <span className="font-mono">{totalShares}</span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="mt-3 text-[11px] text-muted">
+                  Next: percentage sliders + auto-rebalance of the other tickers.
                 </div>
               </div>
 
