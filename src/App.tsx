@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import TickerPicker from "./components/TickerPicker";
+import Sparkline from "./components/Sparkline";
 
 type UniverseRow = {
   ticker: string;
@@ -122,9 +123,11 @@ function DataSmokeTest() {
 function PriceDemoChart({
   tickers,
   weights,
+  onComputed,
 }: {
   tickers: string[];
   weights: { ticker: string; w: number }[];
+  onComputed?: (x: { dates: string[]; portfolio: number[] | null; kpi: KPI | null }) => void;
 }) {
   const [data, setData] = useState<PricesDemo | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -180,6 +183,15 @@ function PriceDemoChart({
     if (!data || !portfolio) return null as null | KPI;
     return kpisFromIndex(portfolio, data.dates);
   }, [data, portfolio]);
+
+  useEffect(() => {
+    if (!onComputed) return;
+    onComputed({
+      dates: data?.dates ?? [],
+      portfolio: portfolio ?? null,
+      kpi: kpi ?? null,
+    });
+  }, [onComputed, data, portfolio, kpi]);
 
   if (err) {
     return (
@@ -333,6 +345,12 @@ export default function App() {
     { ticker: "MSFT", shares: 1 },
   ]);
 
+  const [computed, setComputed] = useState<{
+    dates: string[];
+    portfolio: number[] | null;
+    kpi: KPI | null;
+  } | null>(null);
+
   // keep holdings in sync with ticker picker:
   // - when a ticker is added: default shares=1
   // - when removed: drop its holding
@@ -458,12 +476,82 @@ export default function App() {
             <div className="grid grid-cols-12 gap-6">
               <section className="col-span-12 lg:col-span-8 rounded-2xl border border-border bg-panel p-4 shadow-soft">
                 <h3 className="text-sm font-semibold">Equity curve (demo)</h3>
-                <PriceDemoChart tickers={tickers} weights={weights} />
+                <PriceDemoChart tickers={tickers} weights={weights} onComputed={setComputed} />
               </section>
 
               <section className="col-span-12 lg:col-span-4 rounded-2xl border border-border bg-panel p-4 shadow-soft">
-                <h3 className="text-sm font-semibold">Drawdown</h3>
-                <div className="mt-3 h-64 rounded-xl bg-wash" />
+                <h3 className="text-sm font-semibold">Drawdown (demo)</h3>
+
+                {!computed?.portfolio || computed.portfolio.length < 2 ? (
+                  <div className="mt-3 text-xs text-muted">Select tickers to compute a portfolio drawdown.</div>
+                ) : (
+                  (() => {
+                    const dd: number[] = [];
+                    let peak = computed.portfolio![0];
+                    for (const v of computed.portfolio!) {
+                      if (v > peak) peak = v;
+                      dd.push(peak > 0 ? v / peak - 1 : 0);
+                    }
+
+                    const ddPts = dd.map((v) => ({ value: v * 100 }));
+
+                    const minDD = Math.min(...dd);
+                    const currentDD = dd[dd.length - 1] ?? 0;
+                    const avgDD = dd.length ? dd.reduce((a, b) => a + b, 0) / dd.length : 0;
+                    const pctInDD = dd.length ? dd.filter((v) => v < 0).length / dd.length : 0;
+
+                    // drawdown durations (in points)
+                    let currentLen = 0;
+                    for (let i = dd.length - 1; i >= 0; i--) {
+                      if (dd[i] < 0) currentLen++;
+                      else break;
+                    }
+                    let maxLen = 0;
+                    let run = 0;
+                    for (const v of dd) {
+                      if (v < 0) {
+                        run++;
+                        if (run > maxLen) maxLen = run;
+                      } else {
+                        run = 0;
+                      }
+                    }
+
+                    return (
+                      <div className="mt-3">
+                        <div className="text-[11px] text-muted">Negative % from peak (higher is better).</div>
+
+                        <div className="mt-2 rounded-xl bg-wash p-3">
+                          <Sparkline series={ddPts} width={520} height={120} stroke="#1F2328" strokeWidth={2} />
+                        </div>
+
+                        <div className="mt-4 grid grid-cols-2 gap-3">
+                          <div className="rounded-xl bg-wash px-3 py-2">
+                            <div className="text-[11px] text-muted">Current drawdown</div>
+                            <div className="mt-1 font-mono text-sm text-ink">{formatPct(currentDD)}</div>
+                          </div>
+                          <div className="rounded-xl bg-wash px-3 py-2">
+                            <div className="text-[11px] text-muted">Worst drawdown</div>
+                            <div className="mt-1 font-mono text-sm text-ink">{formatPct(minDD)}</div>
+                          </div>
+                          <div className="rounded-xl bg-wash px-3 py-2">
+                            <div className="text-[11px] text-muted">Time in drawdown</div>
+                            <div className="mt-1 font-mono text-sm text-ink">{formatPct(pctInDD)}</div>
+                          </div>
+                          <div className="rounded-xl bg-wash px-3 py-2">
+                            <div className="text-[11px] text-muted">Max drawdown length</div>
+                            <div className="mt-1 font-mono text-sm text-ink">{maxLen} pts</div>
+                          </div>
+                        </div>
+
+                        <div className="mt-3 text-[11px] text-muted">
+                          Avg drawdown: <span className="font-mono text-ink">{formatPct(avgDD)}</span> · Current streak: {" "}
+                          <span className="font-mono text-ink">{currentLen} pts</span>
+                        </div>
+                      </div>
+                    );
+                  })()
+                )}
               </section>
 
               <section className="col-span-12 rounded-2xl border border-border bg-panel p-4 shadow-soft">

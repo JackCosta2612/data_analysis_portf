@@ -1,38 +1,163 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+
 type Pt = { value: number };
 
-function pathFrom(values: number[], w: number, h: number, pad = 2) {
-  const xs = values.map((_, i) => (i / Math.max(values.length - 1, 1)) * (w - 2 * pad) + pad);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const ys = values.map((v) => {
-    const t = max === min ? 0.5 : (v - min) / (max - min);
-    return (1 - t) * (h - 2 * pad) + pad;
-  });
-  let d = `M ${xs[0]} ${ys[0]}`;
-  for (let i = 1; i < values.length; i++) d += ` L ${xs[i]} ${ys[i]}`;
-  return d;
-}
-
-export default function Sparkline({
-  series,
-  width = 360,
-  height = 90,
-  stroke = "#1F2328",
-  strokeWidth = 2,
-}: {
+type Props = {
   series: Pt[];
   width?: number;
   height?: number;
   stroke?: string;
   strokeWidth?: number;
-}) {
+  frameStroke?: string;
+  labelColor?: string;
+  showFrame?: boolean;
+  showYLabels?: boolean;
+  showEndpoints?: boolean;
+  responsive?: boolean;
+  labelFontSize?: number;
+};
+
+function buildPath(values: number[], w: number, h: number, pad: number) {
+  const n = values.length;
+
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+
+  const xAt = (i: number) => (i / Math.max(n - 1, 1)) * (w - 2 * pad) + pad;
+  const yAt = (v: number) => {
+    const t = max === min ? 0.5 : (v - min) / (max - min);
+    return (1 - t) * (h - 2 * pad) + pad;
+  };
+
+  const pts = values.map((v, i) => ({ x: xAt(i), y: yAt(v), v }));
+
+  let d = `M ${pts[0].x} ${pts[0].y}`;
+  for (let i = 1; i < pts.length; i++) d += ` L ${pts[i].x} ${pts[i].y}`;
+
+  return { d, pts, min, max };
+}
+
+export default function Sparkline({
+  series,
+  width = 360,
+  height = 110,
+  stroke = "#1F2328",
+  strokeWidth = 2,
+  frameStroke = "#E5E7EB",
+  labelColor = "#4B5563",
+  showFrame = true,
+  showYLabels = true,
+  showEndpoints = true,
+  responsive = true,
+  labelFontSize = 12,
+}: Props) {
   const vals = series.map((p) => p.value).filter((v) => Number.isFinite(v));
   if (vals.length < 2) return null;
 
-  const d = pathFrom(vals, width, height);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const [wrapWidth, setWrapWidth] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!responsive) return;
+    const el = wrapRef.current;
+    if (!el) return;
+
+    const update = () => {
+      const w = el.getBoundingClientRect().width;
+      if (Number.isFinite(w) && w > 0) setWrapWidth(Math.floor(w));
+    };
+
+    update();
+
+    const ro = new ResizeObserver(() => update());
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [responsive]);
+
+  const innerW = responsive && wrapWidth && wrapWidth > 0 ? wrapWidth : width;
+
+  // Extra padding prevents the stroke from being clipped at the left/right ends.
+  const pad = Math.max(8, Math.ceil(strokeWidth * 2.5));
+  const { d, pts, min, max } = useMemo(
+    () => buildPath(vals, innerW, height, pad),
+    [vals.join(","), innerW, height, pad]
+  );
+
+  const y0 = height - pad; // baseline
+  const leftX = pad;
+  const rightX = innerW - pad;
+
+  const fmt = (v: number) => {
+    if (!Number.isFinite(v)) return "";
+    // compact formatting
+    if (Math.abs(v) >= 1000) return `${(v / 1000).toFixed(1)}k`;
+    return `${v.toFixed(1)}`;
+  };
+
   return (
-    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
-      <path d={d} fill="none" stroke={stroke} strokeWidth={strokeWidth} />
-    </svg>
+    <div ref={wrapRef} style={{ width: "100%" }}>
+      <svg
+        width="100%"
+        height={height}
+        viewBox={`0 0 ${innerW} ${height}`}
+        preserveAspectRatio="xMidYMid meet"
+        style={{ width: "100%", overflow: "visible", display: "block" }}
+        aria-label="sparkline"
+        role="img"
+      >
+        {showFrame && (
+          <>
+            {/* frame */}
+            <rect
+              x={pad}
+              y={pad}
+              width={innerW - 2 * pad}
+              height={height - 2 * pad}
+              fill="none"
+              stroke={frameStroke}
+              strokeWidth={1}
+              rx={6}
+            />
+            {/* baseline */}
+            <line x1={leftX} y1={y0} x2={rightX} y2={y0} stroke={frameStroke} strokeWidth={1} />
+          </>
+        )}
+
+        {/* path */}
+        <path d={d} fill="none" stroke={stroke} strokeWidth={strokeWidth} />
+
+        {showEndpoints && (
+          <>
+            <circle cx={pts[0].x} cy={pts[0].y} r={2.5} fill={stroke} />
+            <circle cx={pts[pts.length - 1].x} cy={pts[pts.length - 1].y} r={2.5} fill={stroke} />
+          </>
+        )}
+
+        {showYLabels && (
+          <>
+            <text
+              x={leftX - 6}
+              y={pad - 2}
+              fontSize={labelFontSize}
+              fill={labelColor}
+              textAnchor="end"
+              dominantBaseline="alphabetic"
+            >
+              {fmt(max)}
+            </text>
+            <text
+              x={leftX - 6}
+              y={height - 2}
+              fontSize={labelFontSize}
+              fill={labelColor}
+              textAnchor="end"
+              dominantBaseline="alphabetic"
+            >
+              {fmt(min)}
+            </text>
+          </>
+        )}
+      </svg>
+    </div>
   );
 }
