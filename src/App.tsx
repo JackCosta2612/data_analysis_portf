@@ -86,6 +86,189 @@ function DataSmokeTest() {
   );
 }
 
+function PriceDemoChart({
+  tickers,
+  weights,
+}: {
+  tickers: string[];
+  weights: { ticker: string; w: number }[];
+}) {
+  const [data, setData] = useState<PricesDemo | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    const base = import.meta.env.BASE_URL || "/";
+    const url = `${base}data/prices_demo.json`;
+
+    (async () => {
+      try {
+        setErr(null);
+        const r = await fetch(url);
+        if (!r.ok) throw new Error(`Fetch failed: ${r.status} (${url})`);
+        setData((await r.json()) as PricesDemo);
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : String(e));
+        setData(null);
+      }
+    })();
+  }, []);
+
+  const shown = useMemo(() => {
+    if (!data) return [] as string[];
+    return tickers.filter((t) => t in data.series).slice(0, 8);
+  }, [data, tickers]);
+
+  const series = useMemo(() => {
+    if (!data) return [] as { t: string; idx: number[] }[];
+    return shown.map((t) => {
+      const y = data.series[t] ?? [];
+      const base = y[0] ?? 1;
+      const idx = y.map((v) => (base ? (v / base) * 100 : v));
+      return { t, idx };
+    });
+  }, [data, shown]);
+
+  const portfolio = useMemo(() => {
+    if (!data || series.length === 0) return null as null | number[];
+
+    const wmap = new Map(weights.map((x) => [x.ticker, x.w] as const));
+    const n = data.dates.length;
+    const out = new Array<number>(n).fill(0);
+
+    for (const s of series) {
+      const w = wmap.get(s.t) ?? 0;
+      for (let i = 0; i < n; i++) out[i] += (s.idx[i] ?? 0) * w;
+    }
+
+    return out;
+  }, [data, series, weights]);
+
+  if (err) {
+    return (
+      <div className="mt-3 text-xs text-red-600">
+        Price load failed: <span className="font-mono">{err}</span>
+      </div>
+    );
+  }
+
+  if (!data) {
+    return <div className="mt-3 text-xs text-muted">Loading price series…</div>;
+  }
+
+  if (shown.length === 0) {
+    return (
+      <div className="mt-3 text-xs text-muted">
+        Select tickers that exist in <span className="font-mono">prices_demo.json</span>.
+      </div>
+    );
+  }
+
+  const dates = data.dates;
+  const all = [...series.flatMap((s) => s.idx), ...(portfolio ?? [])].filter((x) => Number.isFinite(x));
+  const ymin = Math.min(...all);
+  const ymax = Math.max(...all);
+
+  const viewW = 760;
+  const viewH = 260;
+  const left = 52;
+  const right = 84;
+  const top = 14;
+  const bottom = 26;
+  const W = viewW - left - right;
+  const H = viewH - top - bottom;
+
+  const x = (i: number) => left + (i / Math.max(1, dates.length - 1)) * W;
+  const y = (v: number) => top + (1 - (v - ymin) / (ymax - ymin || 1)) * H;
+
+  const yTicks = [0, 0.5, 1].map((p) => ymin + p * (ymax - ymin));
+
+  const lineColors = [
+    "#1F2328", // ink
+    "#0B3D91",
+    "#2F6F8F",
+    "#1F7A6A",
+    "#6D4C8F",
+    "#B07D2B",
+    "#C94C4C",
+    "#556B2F",
+  ];
+
+  return (
+    <div className="mt-3">
+      <div className="text-[11px] text-muted">
+        Normalized to <span className="font-mono">100</span> at start date.
+      </div>
+
+      <svg viewBox={`0 0 ${viewW} ${viewH}`} className="mt-2 w-full">
+        {/* frame */}
+        <line x1={left} y1={top + H} x2={left + W} y2={top + H} stroke="#E5E7EB" />
+        <line x1={left} y1={top} x2={left} y2={top + H} stroke="#E5E7EB" />
+
+        {/* y grid + labels */}
+        {yTicks.map((tv, k) => (
+          <g key={k}>
+            <line x1={left} y1={y(tv)} x2={left + W} y2={y(tv)} stroke="#F3F4F6" />
+            <text x={left - 8} y={y(tv) + 4} textAnchor="end" fontSize="10" fill="#4B5563">
+              {tv.toFixed(0)}
+            </text>
+          </g>
+        ))}
+
+        {/* x labels (start/end) */}
+        <text x={left} y={top + H + 18} fontSize="10" fill="#4B5563">
+          {dates[0]}
+        </text>
+        <text x={left + W} y={top + H + 18} textAnchor="end" fontSize="10" fill="#4B5563">
+          {dates[dates.length - 1]}
+        </text>
+
+        {/* ticker lines */}
+        {series.map((s, si) => {
+          const d = s.idx
+            .map((v, i) => `${i === 0 ? "M" : "L"} ${x(i).toFixed(2)} ${y(v).toFixed(2)}`)
+            .join(" ");
+          const stroke = lineColors[(si + 1) % lineColors.length];
+          return <path key={s.t} d={d} fill="none" strokeWidth="2" stroke={stroke} opacity="0.85" />;
+        })}
+
+        {/* portfolio overlay */}
+        {portfolio && (
+          <path
+            d={portfolio
+              .map((v, i) => `${i === 0 ? "M" : "L"} ${x(i).toFixed(2)} ${y(v).toFixed(2)}`)
+              .join(" ")}
+            fill="none"
+            strokeWidth="3"
+            stroke="#1F2328"
+            opacity="0.95"
+          />
+        )}
+
+        {/* right-side labels */}
+        {series.map((s, si) => {
+          const last = s.idx[s.idx.length - 1];
+          const stroke = lineColors[(si + 1) % lineColors.length];
+          return (
+            <text key={s.t + "_lbl"} x={left + W + 10} y={y(last) + 4} fontSize="10" fill={stroke}>
+              {s.t}
+            </text>
+          );
+        })}
+
+        {portfolio && (
+          <text x={left + W + 10} y={y(portfolio[portfolio.length - 1]) + 4} fontSize="10" fill="#1F2328">
+            PORT
+          </text>
+        )}
+      </svg>
+
+      <div className="mt-2 text-[11px] text-muted">
+        Demo data only (static). Next: real returns, benchmarks, and risk metrics.
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [tickers, setTickers] = useState<string[]>(["AAPL", "MSFT"]);
 
@@ -150,8 +333,8 @@ export default function App() {
 
             <div className="grid grid-cols-12 gap-6">
               <section className="col-span-12 lg:col-span-8 rounded-2xl border border-border bg-panel p-4 shadow-soft">
-                <h3 className="text-sm font-semibold">Equity curve</h3>
-                <div className="mt-3 h-64 rounded-xl bg-wash" />
+                <h3 className="text-sm font-semibold">Equity curve (demo)</h3>
+                <PriceDemoChart tickers={tickers} weights={weights} />
               </section>
 
               <section className="col-span-12 lg:col-span-4 rounded-2xl border border-border bg-panel p-4 shadow-soft">
