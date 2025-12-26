@@ -444,7 +444,7 @@ function BenchmarkAndWinnersCard({
   }, [prices, benchIdx]);
 
   const winners = useMemo(() => {
-    if (!prices || !universe) return [] as (UniverseRow & { kpi: KPI })[];
+    if (!prices || !universe) return [] as (UniverseRow & { kpi: KPI; idx: number[] })[];
 
     const s = prices.series ?? {};
     const portfolioSet = new Set(portfolioTickers.map((t) => t.toUpperCase()));
@@ -462,7 +462,7 @@ function BenchmarkAndWinnersCard({
         const base = y[0] ?? 1;
         const idx = y.map((v) => (base ? (v / base) * 100 : v));
         const kpi = kpisFromIndex(idx, prices.dates);
-        return { ...r, kpi };
+        return { ...r, kpi, idx };
       })
       .filter((r) => Number.isFinite(r.kpi.totalReturn));
 
@@ -473,7 +473,7 @@ function BenchmarkAndWinnersCard({
         ? scored.filter((r) => r.kpi.totalReturn > portfolioKpi.totalReturn)
         : [];
 
-    return (beat.length ? beat : scored).slice(0, 5);
+    return (beat.length ? beat : scored).slice(0, 6);
   }, [prices, universe, inferredRiskBucket, portfolioTickers, benchmark, portfolioKpi]);
 
   const combined = useMemo(() => {
@@ -702,29 +702,71 @@ function BenchmarkAndWinnersCard({
             {winners.length === 0 ? (
               <div className="mt-3 text-xs text-muted">No comparable tickers found in the current demo dataset.</div>
             ) : (
-              <div className="mt-3 overflow-hidden rounded-xl border border-border">
-                <table className="w-full text-left text-sm">
-                  <thead className="bg-wash text-[11px] text-muted">
-                    <tr>
-                      <th className="px-3 py-2">Ticker</th>
-                      <th className="px-3 py-2">Name</th>
-                      <th className="px-3 py-2">Total</th>
-                      <th className="px-3 py-2">CAGR</th>
-                      <th className="px-3 py-2">Max DD</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {winners.map((r) => (
-                      <tr key={r.ticker} className="border-t border-border">
-                        <td className="px-3 py-2 font-mono">{r.ticker}</td>
-                        <td className="px-3 py-2">{r.name}</td>
-                        <td className="px-3 py-2 font-mono">{formatPct(r.kpi.totalReturn)}</td>
-                        <td className="px-3 py-2 font-mono">{formatPct(r.kpi.cagr)}</td>
-                        <td className="px-3 py-2 font-mono">{formatPct(r.kpi.maxDrawdown)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {(() => {
+                  const winColors = [
+                    "#0B3D91",
+                    "#2F6F8F",
+                    "#1F7A6A",
+                    "#6D4C8F",
+                    "#B07D2B",
+                    "#C94C4C",
+                  ];
+
+                  return winners.map((r, i) => {
+                    const stroke = winColors[i % winColors.length];
+                    const spark = (r.idx ?? []).map((v) => ({ value: v }));
+
+                    const dPort =
+                      portfolioKpi?.totalReturn != null ? r.kpi.totalReturn - portfolioKpi.totalReturn : null;
+                    const dBench = benchKpi?.totalReturn != null ? r.kpi.totalReturn - benchKpi.totalReturn : null;
+
+                    const cls = (x: number | null) => {
+                      if (x == null || !Number.isFinite(x)) return "text-ink";
+                      if (Math.abs(x) < 1e-12) return "text-ink";
+                      return x > 0 ? "text-emerald-600" : "text-rose-600";
+                    };
+
+                    return (
+                      <div key={r.ticker} className="rounded-2xl border border-border bg-panel p-3 shadow-soft">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="font-mono text-sm">{r.ticker}</div>
+                            <div className="mt-0.5 text-xs text-muted line-clamp-2">{r.name}</div>
+                          </div>
+
+                          <div className="text-right">
+                            <div className="text-[11px] text-muted">Total</div>
+                            <div className="mt-0.5 font-mono text-sm text-ink">{formatPct(r.kpi.totalReturn)}</div>
+                          </div>
+                        </div>
+
+                        <div className="mt-2 rounded-xl bg-wash p-2">
+                          <Sparkline series={spark} width={260} height={70} stroke={stroke} strokeWidth={2} />
+                        </div>
+
+                        <div className="mt-3 grid grid-cols-3 gap-2">
+                          <div className="rounded-xl bg-wash px-2 py-2">
+                            <div className="text-[11px] text-muted">CAGR</div>
+                            <div className="mt-0.5 font-mono text-[12px] text-ink">{formatPct(r.kpi.cagr)}</div>
+                          </div>
+                          <div className="rounded-xl bg-wash px-2 py-2">
+                            <div className="text-[11px] text-muted">Max DD</div>
+                            <div className="mt-0.5 font-mono text-[12px] text-ink">{formatPct(r.kpi.maxDrawdown)}</div>
+                          </div>
+                          <div className="rounded-xl bg-wash px-2 py-2">
+                            <div className="text-[11px] text-muted">Δ vs Port</div>
+                            <div className={`mt-0.5 font-mono text-[12px] ${cls(dPort)}`}>{dPort == null ? "—" : formatPct(dPort)}</div>
+                          </div>
+                        </div>
+
+                        <div className="mt-2 text-[11px] text-muted">
+                          Δ vs bench: <span className={`font-mono ${cls(dBench)}`}>{dBench == null ? "—" : formatPct(dBench)}</span>
+                        </div>
+                      </div>
+                    );
+                  });
+                })()}
               </div>
             )}
           </div>

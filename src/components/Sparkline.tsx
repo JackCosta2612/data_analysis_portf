@@ -17,13 +17,13 @@ type Props = {
   labelFontSize?: number;
 };
 
-function buildPath(values: number[], w: number, h: number, pad: number) {
+function buildPath(values: number[], w: number, h: number, pad: number, xOffset: number) {
   const n = values.length;
 
   const min = Math.min(...values);
   const max = Math.max(...values);
 
-  const xAt = (i: number) => (i / Math.max(n - 1, 1)) * (w - 2 * pad) + pad;
+  const xAt = (i: number) => (i / Math.max(n - 1, 1)) * (w - 2 * pad) + pad + xOffset;
   const yAt = (v: number) => {
     const t = max === min ? 0.5 : (v - min) / (max - min);
     return (1 - t) * (h - 2 * pad) + pad;
@@ -74,18 +74,27 @@ export default function Sparkline({
     return () => ro.disconnect();
   }, [responsive]);
 
-  const innerW = responsive && wrapWidth && wrapWidth > 0 ? wrapWidth : width;
+  const totalW = responsive && wrapWidth && wrapWidth > 0 ? wrapWidth : width;
+
+  // Left gutter reserved for Y labels so they don't overlap the plot.
+  const labelGutter = showYLabels ? Math.max(34, Math.ceil(labelFontSize * 3.2)) : 0;
+
+  // Plot area width (keep a sane minimum so the chart doesn't collapse).
+  const plotW = Math.max(140, totalW - labelGutter);
+
+  // X offset for everything that belongs to the plot.
+  const x0 = labelGutter;
 
   // Extra padding prevents the stroke from being clipped at the left/right ends.
   const pad = Math.max(8, Math.ceil(strokeWidth * 2.5));
   const { d, pts, min, max } = useMemo(
-    () => buildPath(vals, innerW, height, pad),
-    [vals.join(","), innerW, height, pad]
+    () => buildPath(vals, plotW, height, pad, x0),
+    [vals.join(","), plotW, height, pad, x0]
   );
 
   const y0 = height - pad; // baseline
-  const leftX = pad;
-  const rightX = innerW - pad;
+  const leftX = x0 + pad;
+  const rightX = x0 + plotW - pad;
 
   const fmt = (v: number) => {
     if (!Number.isFinite(v)) return "";
@@ -99,7 +108,7 @@ export default function Sparkline({
       <svg
         width="100%"
         height={height}
-        viewBox={`0 0 ${innerW} ${height}`}
+        viewBox={`0 0 ${plotW + labelGutter} ${height}`}
         preserveAspectRatio="xMidYMid meet"
         style={{ width: "100%", overflow: "visible", display: "block" }}
         aria-label="sparkline"
@@ -109,9 +118,9 @@ export default function Sparkline({
           <>
             {/* frame */}
             <rect
-              x={pad}
+              x={x0 + pad}
               y={pad}
-              width={innerW - 2 * pad}
+              width={plotW - 2 * pad}
               height={height - 2 * pad}
               fill="none"
               stroke={frameStroke}
@@ -136,8 +145,8 @@ export default function Sparkline({
         {showYLabels && (
           <>
             <text
-              x={leftX - 6}
-              y={pad - 2}
+              x={x0 - 8}
+              y={pad + labelFontSize - 2}
               fontSize={labelFontSize}
               fill={labelColor}
               textAnchor="end"
@@ -146,8 +155,8 @@ export default function Sparkline({
               {fmt(max)}
             </text>
             <text
-              x={leftX - 6}
-              y={height - 2}
+              x={x0 - 8}
+              y={height - pad - 2}
               fontSize={labelFontSize}
               fill={labelColor}
               textAnchor="end"
