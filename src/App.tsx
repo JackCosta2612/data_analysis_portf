@@ -914,6 +914,64 @@ export default function App() {
     [holdings]
   );
 
+  const [totalSharesDraft, setTotalSharesDraft] = useState<string>("");
+  const [isEditingTotalShares, setIsEditingTotalShares] = useState(false);
+
+  useEffect(() => {
+    if (!isEditingTotalShares) setTotalSharesDraft(String(totalShares));
+  }, [totalShares, isEditingTotalShares]);
+
+  const setTotalSharesAndRescale = (targetTotal: number) => {
+    const T = Math.max(0, Math.round(Number.isFinite(targetTotal) ? targetTotal : 0));
+
+    setHoldings((prev) => {
+      if (!prev.length) return prev;
+
+      const curTotal = prev.reduce((s, x) => s + (Number.isFinite(x.shares) ? x.shares : 0), 0);
+
+      // If current total is 0, fall back to equal distribution.
+      if (curTotal <= 0) {
+        const base = prev.length ? Math.floor(T / prev.length) : 0;
+        let rem = prev.length ? T - base * prev.length : 0;
+        const ordered = prev.slice().sort((a, b) => a.ticker.localeCompare(b.ticker));
+        const alloc = new Map<string, number>();
+        for (const x of ordered) {
+          const add = rem > 0 ? 1 : 0;
+          if (rem > 0) rem -= 1;
+          alloc.set(x.ticker, base + add);
+        }
+        return prev.map((x) => ({ ...x, shares: alloc.get(x.ticker) ?? 0 }));
+      }
+
+      // Preserve ratios: shares_i / curTotal.
+      const ratios = prev.map((x) => {
+        const s = Number.isFinite(x.shares) ? x.shares : 0;
+        const exact = (s / curTotal) * T;
+        return { ticker: x.ticker, floor: Math.floor(exact), frac: exact - Math.floor(exact) };
+      });
+
+      let used = ratios.reduce((s, r) => s + r.floor, 0);
+      let rem = T - used;
+
+      // Distribute remainder by largest fractional parts (stable by ticker name).
+      ratios.sort((a, b) => (b.frac - a.frac) || a.ticker.localeCompare(b.ticker));
+      const extras = new Map<string, number>();
+      for (const r of ratios) extras.set(r.ticker, 0);
+      for (let i = 0; i < ratios.length && rem > 0; i++) {
+        extras.set(ratios[i].ticker, (extras.get(ratios[i].ticker) ?? 0) + 1);
+        rem -= 1;
+        if (i === ratios.length - 1 && rem > 0) i = -1;
+      }
+
+      const finalShares = new Map<string, number>();
+      for (const r of ratios) {
+        finalShares.set(r.ticker, r.floor + (extras.get(r.ticker) ?? 0));
+      }
+
+      return prev.map((x) => ({ ...x, shares: finalShares.get(x.ticker) ?? 0 }));
+    });
+  };
+
   const weights = useMemo(() => {
     const denom = totalShares || 1;
     return holdings.map((h) => ({ ticker: h.ticker, w: h.shares / denom }));
@@ -942,41 +1000,187 @@ export default function App() {
 
                 <div className="mt-3 space-y-2">
                   {holdings.map((h) => {
-                    const pct = (h.shares / (totalShares || 1)) * 100;
+                    const denom = Math.max(1, totalShares);
+                    const pct = (h.shares / denom) * 100;
+
+                    const setShares = (ticker: string, shares: number) => {
+                      const v = Math.max(0, Math.round(Number.isFinite(shares) ? shares : 0));
+                      setHoldings((prev) => prev.map((x) => (x.ticker === ticker ? { ...x, shares: v } : x)));
+                    };
+
+                    const setPctAndRebalance = (ticker: string, pctTarget: number) => {
+                      setHoldings((prev) => {
+                        if (!prev.length) return prev;
+
+                        const total = Math.max(
+                          1,
+                          prev.reduce((s, x) => s + (Number.isFinite(x.shares) ? x.shares : 0), 0)
+                        );
+
+                        // desired shares for selected ticker (round UP)
+                        let desired = Math.ceil((Math.max(0, Math.min(100, pctTarget)) / 100) * total);
+                        desired = Math.min(desired, total);
+
+                        const others = prev.filter((x) => x.ticker !== ticker);
+                        const remaining = total - desired;
+
+                        if (others.length === 0) {
+                          return prev.map((x) => (x.ticker === ticker ? { ...x, shares: desired } : x));
+                        }
+
+                        const otherTotal = others.reduce(
+                          (s, x) => s + (Number.isFinite(x.shares) ? x.shares : 0),
+                          0
+                        );
+
+                        // Allocate remaining shares to others (proportional if possible, else equal).
+                        let alloc: { ticker: string; shares: number }[] = [];
+
+                        if (otherTotal <= 0) {
+                          const base = Math.floor(remaining / others.length);
+                          let rem = remaining - base * others.length;
+                          alloc = others
+                            .slice()
+                            .sort((a, b) => a.ticker.localeCompare(b.ticker))
+                            .map((x) => {
+                              const add = rem > 0 ? 1 : 0;
+                              if (rem > 0) rem -= 1;
+                              return { ticker: x.ticker, shares: base + add };
+                            });
+                        } else {
+                          const raw = others.map((x) => {
+                            const w = (x.shares || 0) / otherTotal;
+                            const exact = w * remaining;
+                            return { ticker: x.ticker, floor: Math.floor(exact), frac: exact - Math.floor(exact) };
+                          });
+
+                          let used = raw.reduce((s, r) => s + r.floor, 0);
+                          let rem = remaining - used;
+
+                          // Distribute leftover by largest fractional parts.
+                          raw.sort((a, b) => b.frac - a.frac);
+                          const extras = new Map<string, number>();
+                          for (const r of raw) extras.set(r.ticker, 0);
+                          for (let i = 0; i < raw.length && rem > 0; i++) {
+                            extras.set(raw[i].ticker, (extras.get(raw[i].ticker) ?? 0) + 1);
+                            rem -= 1;
+                            if (i === raw.length - 1 && rem > 0) i = -1; // loop if still remainder
+                          }
+
+                          alloc = raw.map((r) => ({
+                            ticker: r.ticker,
+                            shares: r.floor + (extras.get(r.ticker) ?? 0),
+                          }));
+                        }
+
+                        return prev.map((x) => {
+                          if (x.ticker === ticker) return { ...x, shares: desired };
+                          const a = alloc.find((z) => z.ticker === x.ticker);
+                          return a ? { ...x, shares: a.shares } : x;
+                        });
+                      });
+                    };
 
                     return (
                       <div key={h.ticker} className="rounded-xl bg-wash px-3 py-2">
                         <div className="flex items-center justify-between">
                           <div className="font-mono text-sm">{h.ticker}</div>
-                          <div className="font-mono text-sm text-muted">{pct.toFixed(1)}%</div>
                         </div>
 
-                        <div className="mt-2 flex items-center gap-3">
-                          <label className="text-xs text-muted">Shares</label>
+                        {/* Shares (integer) */}
+                        <div className="mt-2 flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-2">
+                            <label className="text-xs text-muted">Shares</label>
+                    <input
+                      className="w-20 rounded-lg border border-border bg-panel px-2 py-1 font-mono text-sm"
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={h.shares}
+                      onFocus={(e) => e.currentTarget.select()}
+                      onChange={(e) => {
+                        const v = Math.max(0, Math.round(Number(e.target.value || 0)));
+                        setShares(h.ticker, v);
+                      }}
+                    />
+                          </div>
+
+                          <div className="w-16 text-right font-mono text-sm text-muted tabular-nums">
+                            {pct.toFixed(1)}%
+                          </div>
+                        </div>
+
+                        {/* Slider (full width) */}
+                        <div className="mt-2">
                           <input
-                            className="w-24 rounded-lg border border-border bg-panel px-2 py-1 font-mono text-sm"
-                            type="number"
+                            className="w-full"
+                            type="range"
                             min={0}
+                            max={100}
                             step={1}
-                            value={h.shares}
+                            value={Number.isFinite(pct) ? Math.round(pct) : 0}
                             onChange={(e) => {
-                              const v = Math.max(0, Math.round(Number(e.target.value || 0)));
-                              setHoldings((prev) =>
-                                prev.map((x) => (x.ticker === h.ticker ? { ...x, shares: v } : x))
-                              );
+                              const v = Math.max(0, Math.min(100, Number(e.target.value || 0)));
+                              setPctAndRebalance(h.ticker, v);
                             }}
                           />
-                          <div className="text-xs text-muted">
-                            Total shares: <span className="font-mono">{totalShares}</span>
-                          </div>
                         </div>
                       </div>
                     );
                   })}
                 </div>
 
+                <div className="mt-3 rounded-xl bg-wash px-3 py-2">
+                  <div className="text-[11px] text-muted">Total shares</div>
+                  <div className="mt-1 flex items-center gap-2">
+                    <input
+                      className="w-28 rounded-lg border border-border bg-panel px-2 py-1 font-mono text-sm text-ink"
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={totalSharesDraft}
+                      onFocus={(e) => {
+                        setIsEditingTotalShares(true);
+                        e.currentTarget.select();
+                      }}
+                      onChange={(e) => {
+                        // keep it editable without triggering rebalancing on each keystroke
+                        setTotalSharesDraft(e.target.value);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          const n = Math.max(0, Math.round(Number(totalSharesDraft || 0)));
+                          setTotalSharesAndRescale(n);
+                          setIsEditingTotalShares(false);
+                        }
+                        if (e.key === "Escape") {
+                          setIsEditingTotalShares(false);
+                        }
+                      }}
+                      onBlur={() => {
+                        // leaving the field cancels (keeps current totals)
+                        setIsEditingTotalShares(false);
+                      }}
+                    />
+
+                    <button
+                      type="button"
+                      className="rounded-lg border border-border bg-panel px-3 py-1 text-sm font-semibold text-ink shadow-soft hover:bg-wash"
+                      onClick={() => {
+                        const n = Math.max(0, Math.round(Number(totalSharesDraft || 0)));
+                        setTotalSharesAndRescale(n);
+                        setIsEditingTotalShares(false);
+                      }}
+                    >
+                      Apply
+                    </button>
+
+                    <div className="text-[11px] text-muted">Preserves current distribution ratios.</div>
+                  </div>
+                </div>
+
                 <div className="mt-3 text-[11px] text-muted">
-                  Next: percentage sliders + auto-rebalance of the other tickers.
+                  Shares and % stay in sync (slider rebalances the others).
                 </div>
               </div>
 
