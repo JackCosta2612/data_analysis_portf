@@ -14,7 +14,13 @@ type PricesDemo = {
   series: Record<string, number[]>;
 };
 
+
 type KPI = { totalReturn: number; cagr: number; maxDrawdown: number };
+
+const AXIS_FONT_FAMILY =
+  "Roboto Mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace";
+const AXIS_FONT_SIZE = 10;
+const AXIS_FILL = "#4B5563";
 
 function formatPct(x: number) {
   const v = x * 100;
@@ -220,10 +226,14 @@ function PriceDemoChart({
 
   const viewW = 760;
   const viewH = 260;
-  const left = 52;
+
+  // With axis labels rendered as HTML (outside the SVG), we can shrink the internal left margin.
+  // Keep a small left padding to avoid stroke clipping on the edge.
+  const left = 4;
   const right = 84;
   const top = 14;
-  const bottom = 26;
+  const bottom = 14;
+
   const W = viewW - left - right;
   const H = viewH - top - bottom;
 
@@ -231,6 +241,7 @@ function PriceDemoChart({
   const y = (v: number) => top + (1 - (v - ymin) / (ymax - ymin || 1)) * H;
 
   const yTicks = [0, 0.5, 1].map((p) => ymin + p * (ymax - ymin));
+
 
   const lineColors = [
     "#1F2328", // ink
@@ -249,68 +260,118 @@ function PriceDemoChart({
         Normalized to <span className="font-mono">100</span> at start date.
       </div>
 
-      <svg viewBox={`0 0 ${viewW} ${viewH}`} className="mt-2 w-full">
-        {/* frame */}
-        <line x1={left} y1={top + H} x2={left + W} y2={top + H} stroke="#E5E7EB" />
-        <line x1={left} y1={top} x2={left} y2={top + H} stroke="#E5E7EB" />
+      <div className="mt-2 grid grid-cols-[auto,1fr] gap-2 items-stretch">
+        {/* Y-axis labels (outside SVG so font size is stable) */}
+        <div
+          className="flex flex-col justify-between text-right"
+          style={{
+            width: 44,
+            paddingTop: top,
+            paddingBottom: bottom,
+            fontFamily: AXIS_FONT_FAMILY,
+            fontSize: AXIS_FONT_SIZE,
+            color: AXIS_FILL,
+          }}
+        >
+          {[...yTicks]
+            .slice()
+            .reverse()
+            .map((tv, k) => (
+              <div key={k} style={{ lineHeight: 1 }}>
+                {tv.toFixed(0)}
+              </div>
+            ))}
+        </div>
 
-        {/* y grid + labels */}
-        {yTicks.map((tv, k) => (
-          <g key={k}>
-            <line x1={left} y1={y(tv)} x2={left + W} y2={y(tv)} stroke="#F3F4F6" />
-            <text x={left - 8} y={y(tv) + 4} textAnchor="end" fontSize="10" fill="#4B5563">
-              {tv.toFixed(0)}
-            </text>
-          </g>
-        ))}
+        <div className="min-w-0">
+          {/* Keep chart responsive but with a stable aspect ratio matching the viewBox */}
+          <div className="aspect-[760/260] w-full">
+            <svg
+              viewBox={`0 0 ${viewW} ${viewH}`}
+              className="h-full w-full"
+              style={{ fontFamily: AXIS_FONT_FAMILY, fontSize: AXIS_FONT_SIZE, fill: AXIS_FILL }}
+            >
+              {/* frame */}
+              <line x1={left} y1={top + H} x2={left + W} y2={top + H} stroke="#E5E7EB" />
+              <line x1={left} y1={top} x2={left} y2={top + H} stroke="#E5E7EB" />
 
-        {/* x labels (start/end) */}
-        <text x={left} y={top + H + 18} fontSize="10" fill="#4B5563">
-          {dates[0]}
-        </text>
-        <text x={left + W} y={top + H + 18} textAnchor="end" fontSize="10" fill="#4B5563">
-          {dates[dates.length - 1]}
-        </text>
+              {/* y grid (labels are outside) */}
+              {yTicks.map((tv, k) => (
+                <g key={k}>
+                  <line x1={left} y1={y(tv)} x2={left + W} y2={y(tv)} stroke="#F3F4F6" />
+                </g>
+              ))}
 
-        {/* ticker lines */}
-        {series.map((s, si) => {
-          const d = s.idx
-            .map((v, i) => `${i === 0 ? "M" : "L"} ${x(i).toFixed(2)} ${y(v).toFixed(2)}`)
-            .join(" ");
-          const stroke = lineColors[(si + 1) % lineColors.length];
-          return <path key={s.t} d={d} fill="none" strokeWidth="2" stroke={stroke} opacity="0.85" />;
-        })}
+              {/* ticker lines */}
+              {series.map((s, si) => {
+                const d = s.idx
+                  .map((v, i) => `${i === 0 ? "M" : "L"} ${x(i).toFixed(2)} ${y(v).toFixed(2)}`)
+                  .join(" ");
+                const stroke = lineColors[(si + 1) % lineColors.length];
+                return <path key={s.t} d={d} fill="none" strokeWidth="2" stroke={stroke} opacity="0.85" />;
+              })}
 
-        {/* portfolio overlay */}
-        {portfolio && (
-          <path
-            d={portfolio
-              .map((v, i) => `${i === 0 ? "M" : "L"} ${x(i).toFixed(2)} ${y(v).toFixed(2)}`)
-              .join(" ")}
-            fill="none"
-            strokeWidth="3"
-            stroke="#1F2328"
-            opacity="0.95"
-          />
-        )}
+              {/* portfolio overlay */}
+              {portfolio && (
+                <path
+                  d={portfolio
+                    .map((v, i) => `${i === 0 ? "M" : "L"} ${x(i).toFixed(2)} ${y(v).toFixed(2)}`)
+                    .join(" ")}
+                  fill="none"
+                  strokeWidth="3"
+                  stroke="#1F2328"
+                  opacity="0.95"
+                />
+              )}
 
-        {/* right-side labels */}
-        {series.map((s, si) => {
-          const last = s.idx[s.idx.length - 1];
-          const stroke = lineColors[(si + 1) % lineColors.length];
-          return (
-            <text key={s.t + "_lbl"} x={left + W + 10} y={y(last) + 4} fontSize="10" fill={stroke}>
-              {s.t}
-            </text>
-          );
-        })}
+              {/* right-side labels */}
+              {series.map((s, si) => {
+                const last = s.idx[s.idx.length - 1];
+                const stroke = lineColors[(si + 1) % lineColors.length];
+                return (
+                  <text
+                    key={s.t + "_lbl"}
+                    x={left + W + 10}
+                    y={y(last) + 4}
+                    fontSize={AXIS_FONT_SIZE}
+                    fill={stroke}
+                    fontFamily={AXIS_FONT_FAMILY}
+                  >
+                    {s.t}
+                  </text>
+                );
+              })}
 
-        {portfolio && (
-          <text x={left + W + 10} y={y(portfolio[portfolio.length - 1]) + 4} fontSize="10" fill="#1F2328">
-            PORT
-          </text>
-        )}
-      </svg>
+              {portfolio && (
+                <text
+                  x={left + W + 10}
+                  y={y(portfolio[portfolio.length - 1]) + 4}
+                  fontSize={AXIS_FONT_SIZE}
+                  fill="#1F2328"
+                  fontFamily={AXIS_FONT_FAMILY}
+                >
+                  PORT
+                </text>
+              )}
+            </svg>
+          </div>
+
+          {/* X-axis labels (outside SVG so font size is stable) */}
+          <div
+            className="mt-1 flex justify-between"
+            style={{
+              paddingLeft: left,
+              paddingRight: right,
+              fontFamily: AXIS_FONT_FAMILY,
+              fontSize: AXIS_FONT_SIZE,
+              color: AXIS_FILL,
+            }}
+          >
+            <span>{dates[0]}</span>
+            <span>{dates[dates.length - 1]}</span>
+          </div>
+        </div>
+      </div>
 
       {kpi && (
         <div className="mt-4 grid grid-cols-3 gap-3">
@@ -550,14 +611,17 @@ function BenchmarkAndWinnersCard({
                 </div>
               </div>
 
-              <div className="flex items-center gap-3 text-[11px] text-muted">
+              <div className="flex flex-col items-end gap-1 text-[11px] text-muted">
                 <div className="flex items-center gap-2">
-                  <span className="inline-block h-[2px] w-6 rounded-full bg-ink" />
+                  <span
+                    className="inline-block h-[3px] w-8 rounded-full"
+                    style={{ backgroundColor: "#111827" }}
+                  />
                   <span>Portfolio</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <span
-                    className="inline-block h-[2px] w-6 rounded-full"
+                    className="inline-block h-[3px] w-8 rounded-full"
                     style={{
                       backgroundImage:
                         "repeating-linear-gradient(to right, #2563EB 0 8px, transparent 8px 14px)",
@@ -574,9 +638,10 @@ function BenchmarkAndWinnersCard({
               </div>
             ) : (
               (() => {
-                const viewW = 760;
+                const labelGutter = 22; // extra room for y-axis labels (prevents clipping)
+                const viewW = 760 + labelGutter;
                 const viewH = 180;
-                const left = 52;
+                const left = 52 + labelGutter;
                 const right = 18;
                 const top = 14;
                 const bottom = 26;
@@ -599,6 +664,7 @@ function BenchmarkAndWinnersCard({
 
                 const yTicks = [0, 0.5, 1].map((p) => ymin + p * (ymax - ymin));
 
+
                 const dPort = port
                   .map((v, i) => `${i === 0 ? "M" : "L"} ${x(i).toFixed(2)} ${y(v).toFixed(2)}`)
                   .join(" ");
@@ -607,7 +673,11 @@ function BenchmarkAndWinnersCard({
                   .join(" ");
 
                 return (
-                  <svg viewBox={`0 0 ${viewW} ${viewH}`} className="mt-3 w-full">
+                  <svg
+                    viewBox={`0 0 ${viewW} ${viewH}`}
+                    className="mt-3 w-full"
+                    style={{ fontFamily: AXIS_FONT_FAMILY, fontSize: AXIS_FONT_SIZE, fill: AXIS_FILL }}
+                  >
                     {/* frame */}
                     <line x1={left} y1={top + H} x2={left + W} y2={top + H} stroke="#E5E7EB" />
                     <line x1={left} y1={top} x2={left} y2={top + H} stroke="#E5E7EB" />
@@ -616,17 +686,31 @@ function BenchmarkAndWinnersCard({
                     {yTicks.map((tv, k) => (
                       <g key={k}>
                         <line x1={left} y1={y(tv)} x2={left + W} y2={y(tv)} stroke="#F3F4F6" />
-                        <text x={left - 8} y={y(tv) + 4} textAnchor="end" fontSize="10" fill="#4B5563">
+                        <text
+                          x={left - 8}
+                          y={y(tv) + 4}
+                          textAnchor="end"
+                          fontSize={AXIS_FONT_SIZE}
+                          fill={AXIS_FILL}
+                          fontFamily={AXIS_FONT_FAMILY}
+                        >
                           {tv.toFixed(0)}
                         </text>
                       </g>
                     ))}
 
                     {/* x labels (start/end) */}
-                    <text x={left} y={top + H + 18} fontSize="10" fill="#4B5563">
+                    <text x={left} y={top + H + 18} fontSize={AXIS_FONT_SIZE} fill={AXIS_FILL} fontFamily={AXIS_FONT_FAMILY}>
                       {dates[0]}
                     </text>
-                    <text x={left + W} y={top + H + 18} textAnchor="end" fontSize="10" fill="#4B5563">
+                    <text
+                      x={left + W}
+                      y={top + H + 18}
+                      textAnchor="end"
+                      fontSize={AXIS_FONT_SIZE}
+                      fill={AXIS_FILL}
+                      fontFamily={AXIS_FONT_FAMILY}
+                    >
                       {dates[dates.length - 1]}
                     </text>
 

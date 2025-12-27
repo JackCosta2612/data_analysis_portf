@@ -49,7 +49,7 @@ export default function Sparkline({
   showYLabels = true,
   showEndpoints = true,
   responsive = true,
-  labelFontSize = 12,
+  labelFontSize = 10,
 }: Props) {
   const vals = series.map((p) => p.value).filter((v) => Number.isFinite(v));
   if (vals.length < 2) return null;
@@ -103,6 +103,11 @@ export default function Sparkline({
     return `${v.toFixed(1)}`;
   };
 
+  // Keep chart typography consistent with the other SVG charts (mono axis/label style).
+  const labelFontFamily =
+    "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace";
+  const labelFontWeight = 500;
+
   return (
     <div ref={wrapRef} style={{ width: "100%" }}>
       <svg
@@ -110,7 +115,13 @@ export default function Sparkline({
         height={height}
         viewBox={`0 0 ${plotW + labelGutter} ${height}`}
         preserveAspectRatio="xMidYMid meet"
-        style={{ width: "100%", overflow: "visible", display: "block" }}
+        style={{
+          width: "100%",
+          overflow: "visible",
+          display: "block",
+          fontFamily: labelFontFamily,
+          fontWeight: labelFontWeight,
+        }}
         aria-label="sparkline"
         role="img"
       >
