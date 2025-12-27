@@ -110,75 +110,247 @@ function kpisFromIndex(series: number[], dates: string[]): KPI {
   return { totalReturn, cagr, maxDrawdown: maxDD };
 }
 
-function DataSmokeTest() {
-  const [status, setStatus] = useState<
-    | { ok: true; tickers: number; universe: number; pricesDates: number; pricesSeries: number }
-    | { ok: false; message: string }
-    | null
-  >(null);
+
+function TickerPriceCards({
+  tickers,
+  rangeKey,
+  placement = "sidebar",
+}: {
+  tickers: string[];
+  rangeKey: RangeKey;
+  placement?: "sidebar" | "main";
+}) {
+  const [prices, setPrices] = useState<PricesDemo | null>(null);
+  const [universe, setUniverse] = useState<UniverseRow[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     const base = import.meta.env.BASE_URL || "/";
-    const u1 = `${base}data/tickers.json`;
-    const u2 = `${base}data/universe.json`;
-    const u3 = `${base}data/prices_demo.json`;
+    const uPrices = `${base}data/prices_demo.json`;
+    const uUniverse = `${base}data/universe.json`;
 
     (async () => {
       try {
-        const [r1, r2, r3] = await Promise.all([fetch(u1), fetch(u2), fetch(u3)]);
-        if (!r1.ok || !r2.ok || !r3.ok) {
-          throw new Error(
-            `Fetch failed: tickers=${r1.status} universe=${r2.status} prices=${r3.status} (base=${base})`
-          );
+        setErr(null);
+        const [rP, rU] = await Promise.all([fetch(uPrices), fetch(uUniverse)]);
+        if (!rP.ok || !rU.ok) {
+          throw new Error(`Fetch failed: prices=${rP.status} universe=${rU.status} (base=${base})`);
         }
-
-        const tickers = (await r1.json()) as unknown[];
-        const universe = (await r2.json()) as UniverseRow[];
-        const prices = (await r3.json()) as PricesDemo;
-
-        const pricesSeries = prices?.series ? Object.keys(prices.series).length : 0;
-        const pricesDates = prices?.dates ? prices.dates.length : 0;
-
-        setStatus({
-          ok: true,
-          tickers: tickers.length,
-          universe: universe.length,
-          pricesDates,
-          pricesSeries,
-        });
+        setPrices((await rP.json()) as PricesDemo);
+        setUniverse((await rU.json()) as UniverseRow[]);
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        setStatus({ ok: false, message: msg });
+        setErr(e instanceof Error ? e.message : String(e));
+        setPrices(null);
+        setUniverse(null);
       }
     })();
   }, []);
 
-  return (
-    <div className="rounded-2xl border border-border bg-panel p-4 shadow-soft">
-      <h3 className="text-sm font-semibold">Data</h3>
-      {!status && <div className="mt-2 text-xs text-muted">Loading static JSON…</div>}
-      {status?.ok && (
-        <div className="mt-2 text-xs text-muted">
-          <div>
-            Loaded <span className="font-mono">tickers.json</span>: {status.tickers} rows
+  const uniMap = useMemo(() => {
+    const m = new Map<string, UniverseRow>();
+    for (const r of universe ?? []) m.set(r.ticker.toUpperCase(), r);
+    return m;
+  }, [universe]);
+
+  const shown = useMemo(() => {
+    const wanted = tickers.map((t) => t.toUpperCase());
+    if (!prices) return wanted;
+    return wanted.filter((t) => t in (prices.series ?? {}));
+  }, [tickers, prices]);
+
+  const selIdx = useMemo(() => {
+    if (!prices) return [] as number[];
+    return indicesForRange(prices.dates, rangeKey);
+  }, [prices, rangeKey]);
+
+  const datesR = useMemo(() => {
+    if (!prices) return [] as string[];
+    return selIdx.map((i) => prices.dates[i]).filter((d) => typeof d === "string");
+  }, [prices, selIdx]);
+
+  const LineCard = ({ t }: { t: string }) => {
+    const y0 = prices?.series?.[t] ?? [];
+    const yR = selIdx.map((i) => y0[i]).map((v) => (Number.isFinite(v) ? (v as number) : NaN));
+    const clean = yR.filter((v) => Number.isFinite(v)) as number[];
+
+    const first = Number.isFinite(yR[0]) ? (yR[0] as number) : (clean[0] ?? NaN);
+    const last = Number.isFinite(yR[yR.length - 1]) ? (yR[yR.length - 1] as number) : (clean[clean.length - 1] ?? NaN);
+    const ret = Number.isFinite(first) && Number.isFinite(last) && first !== 0 ? last / first - 1 : 0;
+
+    const up = ret >= 0;
+    const stroke = up ? "#059669" : "#E11D48";
+    const fill = up ? "rgba(5, 150, 105, 0.12)" : "rgba(225, 29, 72, 0.12)";
+
+    const name = uniMap.get(t)?.name;
+
+    if (!prices || datesR.length < 2 || clean.length < 2) {
+      return (
+        <div className="rounded-2xl border border-border bg-panel p-4 shadow-soft">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="font-mono text-sm">{t}</div>
+              <div className="mt-0.5 text-xs text-muted">{name ?? ""}</div>
+            </div>
+            <div className="text-right">
+              <div className="text-[11px] text-muted">Range</div>
+              <div className="mt-0.5 font-mono text-sm text-ink">—</div>
+            </div>
           </div>
+          <div className="mt-3 text-xs text-muted">Not enough points in this range.</div>
+        </div>
+      );
+    }
+
+    // Yahoo-finance style: line + light area fill, minimal axes.
+    const labelGutter = 26;
+    const viewW = 360 + labelGutter;
+    const viewH = 140;
+    const left = 10 + labelGutter;
+    const right = 10;
+    const top = 8;
+    const bottom = 22;
+    const W = viewW - left - right;
+    const H = viewH - top - bottom;
+
+    const ymin0 = Math.min(...clean);
+    const ymax0 = Math.max(...clean);
+    const pad = (ymax0 - ymin0) * 0.06;
+    const ymin = ymin0 - pad;
+    const ymax = ymax0 + pad;
+
+    const x = (i: number) => left + (i / Math.max(1, datesR.length - 1)) * W;
+    const y = (v: number) => top + (1 - (v - ymin) / (ymax - ymin || 1)) * H;
+
+    const dLine = yR
+      .map((v, i) => {
+        const vv = Number.isFinite(v) ? (v as number) : NaN;
+        if (!Number.isFinite(vv)) return null;
+        return `${i === 0 ? "M" : "L"} ${x(i).toFixed(2)} ${y(vv).toFixed(2)}`;
+      })
+      .filter(Boolean)
+      .join(" ");
+
+    const yBase = top + H;
+    const x0 = x(0);
+    const xN = x(datesR.length - 1);
+    const dArea = `${dLine} L ${xN.toFixed(2)} ${yBase.toFixed(2)} L ${x0.toFixed(2)} ${yBase.toFixed(2)} Z`;
+
+    const clsRet = up ? "text-emerald-600" : "text-rose-600";
+
+    return (
+      <div className="rounded-2xl border border-border bg-panel p-4 shadow-soft">
+        <div className="flex items-start justify-between gap-3">
           <div>
-            Loaded <span className="font-mono">universe.json</span>: {status.universe} rows
+            <div className="font-mono text-sm">{t}</div>
+            <div className="mt-0.5 text-xs text-muted line-clamp-1">{name ?? ""}</div>
           </div>
-          <div>
-            Loaded <span className="font-mono">prices_demo.json</span>: {status.pricesSeries} series ·{" "}
-            {status.pricesDates} dates
+          <div className="text-right">
+            <div className="text-[11px] text-muted">Change</div>
+            <div className={`mt-0.5 font-mono text-sm ${clsRet}`}>{formatPct(ret)}</div>
           </div>
         </div>
-      )}
-      {status && !status.ok && (
-        <div className="mt-2 text-xs text-red-600">
-          Data load failed: <span className="font-mono">{status.message}</span>
+
+        <div className="mt-3 rounded-xl bg-wash p-2">
+          <svg
+            viewBox={`0 0 ${viewW} ${viewH}`}
+            className="w-full"
+            style={{ fontFamily: AXIS_FONT_FAMILY, fontSize: AXIS_FONT_SIZE, fill: AXIS_FILL }}
+          >
+            {/* subtle grid */}
+            <line x1={left} y1={top + H} x2={left + W} y2={top + H} stroke="#E5E7EB" />
+            <line x1={left} y1={top + H * 0.5} x2={left + W} y2={top + H * 0.5} stroke="#F3F4F6" />
+
+            {/* area */}
+            <path d={dArea} fill={fill} stroke="none" />
+
+            {/* line */}
+            <path d={dLine} fill="none" stroke={stroke} strokeWidth="2.25" />
+
+            {/* y labels (outside plot, in gutter) */}
+            <text
+              x={left - 8}
+              y={top + 10}
+              textAnchor="end"
+              fontFamily={AXIS_FONT_FAMILY}
+              fontSize={AXIS_FONT_SIZE}
+              fill={AXIS_FILL}
+            >
+              {ymax0.toFixed(1)}
+            </text>
+            <text
+              x={left - 8}
+              y={top + H + 6}
+              textAnchor="end"
+              fontFamily={AXIS_FONT_FAMILY}
+              fontSize={AXIS_FONT_SIZE}
+              fill={AXIS_FILL}
+            >
+              {ymin0.toFixed(1)}
+            </text>
+
+            {/* start/end dates */}
+            <text x={left} y={viewH - 6} fontFamily={AXIS_FONT_FAMILY} fontSize={AXIS_FONT_SIZE} fill={AXIS_FILL}>
+              {datesR[0]}
+            </text>
+            <text
+              x={left + W}
+              y={viewH - 6}
+              textAnchor="end"
+              fontFamily={AXIS_FONT_FAMILY}
+              fontSize={AXIS_FONT_SIZE}
+              fill={AXIS_FILL}
+            >
+              {datesR[datesR.length - 1]}
+            </text>
+          </svg>
         </div>
-      )}
-      <div className="mt-3 text-[11px] text-muted">
-        Public path: <span className="font-mono">{import.meta.env.BASE_URL || "/"}</span>
+
+        <div className="mt-2 flex items-center justify-between text-[11px] text-muted">
+          <div>
+            Last: <span className="font-mono text-ink">{Number.isFinite(last) ? last.toFixed(2) : "—"}</span>
+          </div>
+          <div>
+            First: <span className="font-mono text-ink">{Number.isFinite(first) ? first.toFixed(2) : "—"}</span>
+          </div>
+        </div>
       </div>
+    );
+  };
+
+  if (err) {
+    return (
+      <div className="rounded-2xl border border-border bg-panel p-4 shadow-soft">
+        <div className="text-sm font-semibold">Tickers</div>
+        <div className="mt-2 text-xs text-red-600">
+          Data load failed: <span className="font-mono">{err}</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (!prices || !universe) {
+    return (
+      <div className="rounded-2xl border border-border bg-panel p-4 shadow-soft">
+        <div className="text-sm font-semibold">Tickers</div>
+        <div className="mt-2 text-xs text-muted">Loading ticker charts…</div>
+      </div>
+    );
+  }
+
+  if (!shown.length) {
+    return (
+      <div className="rounded-2xl border border-border bg-panel p-4 shadow-soft">
+        <div className="text-sm font-semibold">Tickers</div>
+        <div className="mt-2 text-xs text-muted">Select tickers to see individual charts.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={placement === "main" ? "grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3" : "space-y-4"}>
+      {shown.map((t) => (
+        <LineCard key={t} t={t} />
+      ))}
     </div>
   );
 }
@@ -1277,14 +1449,6 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="rounded-2xl border border-border bg-panel p-4 shadow-soft">
-                <h3 className="text-sm font-semibold">Weights</h3>
-                <div className="mt-3 text-xs text-muted">
-                  Next: absolute shares + % sliders (auto-normalized).
-                </div>
-              </div>
-
-              <DataSmokeTest />
             </div>
           </aside>
 
@@ -1298,6 +1462,9 @@ export default function App() {
                 Select tickers and weights on the left. Charts and comparisons render here.
               </p>
             </header>
+            <div className="mb-6">
+              <TickerPriceCards tickers={tickers} rangeKey={rangeKey} placement="main" />
+            </div>
 
             <div className="grid grid-cols-12 gap-6">
               <section className="col-span-12 lg:col-span-8 rounded-2xl border border-border bg-panel p-4 shadow-soft">
