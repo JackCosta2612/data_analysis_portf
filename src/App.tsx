@@ -14,8 +14,65 @@ type PricesDemo = {
   series: Record<string, number[]>;
 };
 
-
 type KPI = { totalReturn: number; cagr: number; maxDrawdown: number };
+
+type RangeKey = "1D" | "5D" | "6M" | "YTD" | "1Y" | "5Y" | "ALL";
+
+const RANGE_OPTIONS: { key: RangeKey; label: string }[] = [
+  { key: "1D", label: "1D" },
+  { key: "5D", label: "5D" },
+  { key: "6M", label: "6M" },
+  { key: "YTD", label: "YTD" },
+  { key: "1Y", label: "1Y" },
+  { key: "5Y", label: "5Y" },
+  { key: "ALL", label: "All" },
+];
+
+function _shiftDate(d: Date, { days = 0, months = 0, years = 0 }: { days?: number; months?: number; years?: number }) {
+  const out = new Date(d.getTime());
+  if (years) out.setFullYear(out.getFullYear() + years);
+  if (months) out.setMonth(out.getMonth() + months);
+  if (days) out.setDate(out.getDate() + days);
+  return out;
+}
+
+function rangeStart(end: Date, key: RangeKey): Date | null {
+  if (key === "ALL") return null;
+  if (key === "1D") return _shiftDate(end, { days: -1 });
+  if (key === "5D") return _shiftDate(end, { days: -5 });
+  if (key === "6M") return _shiftDate(end, { months: -6 });
+  if (key === "YTD") return new Date(end.getFullYear(), 0, 1);
+  if (key === "1Y") return _shiftDate(end, { years: -1 });
+  return _shiftDate(end, { years: -5 });
+}
+
+function indicesForRange(dates: string[], key: RangeKey): number[] {
+  if (!dates || dates.length === 0) return [];
+
+  const ts = dates
+    .map((d, i) => ({ i, t: new Date(d).getTime() }))
+    .filter((x) => Number.isFinite(x.t));
+
+  if (ts.length === 0) {
+    // fallback: treat as simple ordinal series
+    const minN = Math.min(dates.length, key === "1D" ? 2 : key === "5D" ? 6 : dates.length);
+    return Array.from({ length: minN }, (_, k) => dates.length - minN + k);
+  }
+
+  ts.sort((a, b) => a.t - b.t);
+  const end = new Date(ts[ts.length - 1].t);
+  const start = rangeStart(end, key);
+
+  let idx = start ? ts.filter((x) => x.t >= start.getTime()).map((x) => x.i) : ts.map((x) => x.i);
+
+  // Ensure we have enough points to draw a meaningful line
+  if (idx.length < 2 && dates.length >= 2) {
+    const take = Math.min(dates.length, key === "1D" ? 2 : key === "5D" ? 6 : 12);
+    idx = Array.from({ length: take }, (_, k) => dates.length - take + k);
+  }
+
+  return idx;
+}
 
 const AXIS_FONT_FAMILY =
   "Roboto Mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace";
@@ -129,10 +186,12 @@ function DataSmokeTest() {
 function PriceDemoChart({
   tickers,
   weights,
+  rangeKey,
   onComputed,
 }: {
   tickers: string[];
   weights: { ticker: string; w: number }[];
+  rangeKey: RangeKey;
   onComputed?: (x: { dates: string[]; portfolio: number[] | null; kpi: KPI | null }) => void;
 }) {
   const [data, setData] = useState<PricesDemo | null>(null);
@@ -160,44 +219,59 @@ function PriceDemoChart({
     return tickers.filter((t) => t in data.series).slice(0, 8);
   }, [data, tickers]);
 
+  const selIdx = useMemo(() => {
+    if (!data) return [] as number[];
+    return indicesForRange(data.dates, rangeKey);
+  }, [data, rangeKey]);
+
+  const datesR = useMemo(() => {
+    if (!data) return [] as string[];
+    return selIdx.map((i) => data.dates[i]).filter((d) => typeof d === "string");
+  }, [data, selIdx]);
+
   const series = useMemo(() => {
     if (!data) return [] as { t: string; idx: number[] }[];
+
     return shown.map((t) => {
       const y = data.series[t] ?? [];
-      const base = y[0] ?? 1;
-      const idx = y.map((v) => (base ? (v / base) * 100 : v));
+      const yR = selIdx.map((i) => y[i]).map((v) => (Number.isFinite(v) ? (v as number) : NaN));
+      const base = Number.isFinite(yR[0]) ? (yR[0] as number) : 1;
+      const idx = yR.map((v) => (Number.isFinite(v) ? (base ? ((v as number) / base) * 100 : (v as number)) : NaN));
       return { t, idx };
     });
-  }, [data, shown]);
+  }, [data, shown, selIdx]);
 
   const portfolio = useMemo(() => {
     if (!data || series.length === 0) return null as null | number[];
 
     const wmap = new Map(weights.map((x) => [x.ticker, x.w] as const));
-    const n = data.dates.length;
+    const n = datesR.length;
     const out = new Array<number>(n).fill(0);
 
     for (const s of series) {
       const w = wmap.get(s.t) ?? 0;
-      for (let i = 0; i < n; i++) out[i] += (s.idx[i] ?? 0) * w;
+      for (let i = 0; i < n; i++) {
+        const v = s.idx[i];
+        out[i] += (Number.isFinite(v) ? (v as number) : 0) * w;
+      }
     }
 
     return out;
-  }, [data, series, weights]);
+  }, [data, series, weights, datesR.length]);
 
   const kpi = useMemo(() => {
     if (!data || !portfolio) return null as null | KPI;
-    return kpisFromIndex(portfolio, data.dates);
-  }, [data, portfolio]);
+    return kpisFromIndex(portfolio, datesR);
+  }, [data, portfolio, datesR]);
 
   useEffect(() => {
     if (!onComputed) return;
     onComputed({
-      dates: data?.dates ?? [],
+      dates: datesR,
       portfolio: portfolio ?? null,
       kpi: kpi ?? null,
     });
-  }, [onComputed, data, portfolio, kpi]);
+  }, [onComputed, data, portfolio, kpi, datesR]);
 
   if (err) {
     return (
@@ -219,7 +293,7 @@ function PriceDemoChart({
     );
   }
 
-  const dates = data.dates;
+  const dates = datesR;
   const all = [...series.flatMap((s) => s.idx), ...(portfolio ?? [])].filter((x) => Number.isFinite(x));
   const ymin = Math.min(...all);
   const ymax = Math.max(...all);
@@ -402,11 +476,13 @@ function BenchmarkAndWinnersCard({
   portfolioWeights,
   portfolio,
   portfolioKpi,
+  rangeKey,
 }: {
   portfolioTickers: string[];
   portfolioWeights: { ticker: string; w: number }[];
   portfolio: number[] | null;
   portfolioKpi: KPI | null;
+  rangeKey: RangeKey;
 }) {
   const [universe, setUniverse] = useState<UniverseRow[] | null>(null);
   const [prices, setPrices] = useState<PricesDemo | null>(null);
@@ -434,9 +510,7 @@ function BenchmarkAndWinnersCard({
         setErr(null);
         const [rU, rP] = await Promise.all([fetch(uUniverse), fetch(uPrices)]);
         if (!rU.ok || !rP.ok) {
-          throw new Error(
-            `Fetch failed: universe=${rU.status} prices=${rP.status} (base=${base})`
-          );
+          throw new Error(`Fetch failed: universe=${rU.status} prices=${rP.status} (base=${base})`);
         }
         setUniverse((await rU.json()) as UniverseRow[]);
         setPrices((await rP.json()) as PricesDemo);
@@ -447,6 +521,16 @@ function BenchmarkAndWinnersCard({
       }
     })();
   }, []);
+
+  const selIdx = useMemo(() => {
+    if (!prices) return [] as number[];
+    return indicesForRange(prices.dates, rangeKey);
+  }, [prices, rangeKey]);
+
+  const datesR = useMemo(() => {
+    if (!prices) return [] as string[];
+    return selIdx.map((i) => prices.dates[i]).filter((d) => typeof d === "string");
+  }, [prices, selIdx]);
 
   const uniMap = useMemo(() => {
     const m = new Map<string, UniverseRow>();
@@ -495,14 +579,18 @@ function BenchmarkAndWinnersCard({
     if (!prices) return null as null | number[];
     const y = prices.series?.[benchmark];
     if (!y || y.length < 2) return null;
-    const base = y[0] ?? 1;
-    return y.map((v) => (base ? (v / base) * 100 : v));
-  }, [prices, benchmark]);
+
+    const yR = selIdx.map((i) => y[i]).map((v) => (Number.isFinite(v) ? (v as number) : NaN));
+    if (yR.length < 2) return null;
+
+    const base = Number.isFinite(yR[0]) ? (yR[0] as number) : 1;
+    return yR.map((v) => (Number.isFinite(v) ? (base ? ((v as number) / base) * 100 : (v as number)) : NaN));
+  }, [prices, benchmark, selIdx]);
 
   const benchKpi = useMemo(() => {
     if (!prices || !benchIdx) return null as null | KPI;
-    return kpisFromIndex(benchIdx, prices.dates);
-  }, [prices, benchIdx]);
+    return kpisFromIndex(benchIdx, datesR);
+  }, [prices, benchIdx, datesR]);
 
   const winners = useMemo(() => {
     if (!prices || !universe) return [] as (UniverseRow & { kpi: KPI; idx: number[] })[];
@@ -520,9 +608,10 @@ function BenchmarkAndWinnersCard({
     const scored = candidates
       .map((r) => {
         const y = s[r.ticker] ?? [];
-        const base = y[0] ?? 1;
-        const idx = y.map((v) => (base ? (v / base) * 100 : v));
-        const kpi = kpisFromIndex(idx, prices.dates);
+        const yR = selIdx.map((i) => y[i]).map((v) => (Number.isFinite(v) ? (v as number) : NaN));
+        const base = Number.isFinite(yR[0]) ? (yR[0] as number) : 1;
+        const idx = yR.map((v) => (Number.isFinite(v) ? (base ? ((v as number) / base) * 100 : (v as number)) : NaN));
+        const kpi = kpisFromIndex(idx, datesR);
         return { ...r, kpi, idx };
       })
       .filter((r) => Number.isFinite(r.kpi.totalReturn));
@@ -535,22 +624,22 @@ function BenchmarkAndWinnersCard({
         : [];
 
     return (beat.length ? beat : scored).slice(0, 6);
-  }, [prices, universe, inferredRiskBucket, portfolioTickers, benchmark, portfolioKpi]);
+  }, [prices, universe, inferredRiskBucket, portfolioTickers, benchmark, portfolioKpi, selIdx, datesR]);
 
   const combined = useMemo(() => {
     if (!prices) return null as null | { dates: string[]; port: number[]; bench: number[] };
     if (!portfolio || !benchIdx) return null;
 
     // Keep lengths aligned to the shortest series.
-    const n = Math.min(prices.dates.length, portfolio.length, benchIdx.length);
+    const n = Math.min(datesR.length, portfolio.length, benchIdx.length);
     if (n < 2) return null;
 
     return {
-      dates: prices.dates.slice(0, n),
+      dates: datesR.slice(0, n),
       port: portfolio.slice(0, n),
       bench: benchIdx.slice(0, n),
     };
-  }, [prices, portfolio, benchIdx]);
+  }, [prices, portfolio, benchIdx, datesR]);
 
   const cmpClass = (a: number | null | undefined, b: number | null | undefined, higherIsBetter = true) => {
     if (a == null || b == null) return "text-ink";
@@ -613,18 +702,14 @@ function BenchmarkAndWinnersCard({
 
               <div className="flex flex-col items-end gap-1 text-[11px] text-muted">
                 <div className="flex items-center gap-2">
-                  <span
-                    className="inline-block h-[3px] w-8 rounded-full"
-                    style={{ backgroundColor: "#111827" }}
-                  />
+                  <span className="inline-block h-[3px] w-8 rounded-full" style={{ backgroundColor: "#111827" }} />
                   <span>Portfolio</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <span
                     className="inline-block h-[3px] w-8 rounded-full"
                     style={{
-                      backgroundImage:
-                        "repeating-linear-gradient(to right, #2563EB 0 8px, transparent 8px 14px)",
+                      backgroundImage: "repeating-linear-gradient(to right, #2563EB 0 8px, transparent 8px 14px)",
                     }}
                   />
                   <span>Benchmark</span>
@@ -664,7 +749,6 @@ function BenchmarkAndWinnersCard({
 
                 const yTicks = [0, 0.5, 1].map((p) => ymin + p * (ymax - ymin));
 
-
                 const dPort = port
                   .map((v, i) => `${i === 0 ? "M" : "L"} ${x(i).toFixed(2)} ${y(v).toFixed(2)}`)
                   .join(" ");
@@ -700,7 +784,13 @@ function BenchmarkAndWinnersCard({
                     ))}
 
                     {/* x labels (start/end) */}
-                    <text x={left} y={top + H + 18} fontSize={AXIS_FONT_SIZE} fill={AXIS_FILL} fontFamily={AXIS_FONT_FAMILY}>
+                    <text
+                      x={left}
+                      y={top + H + 18}
+                      fontSize={AXIS_FONT_SIZE}
+                      fill={AXIS_FILL}
+                      fontFamily={AXIS_FONT_FAMILY}
+                    >
                       {dates[0]}
                     </text>
                     <text
@@ -715,14 +805,7 @@ function BenchmarkAndWinnersCard({
                     </text>
 
                     {/* benchmark (dashed) */}
-                    <path
-                      d={dBench}
-                      fill="none"
-                      stroke="#2563EB"
-                      strokeWidth="2"
-                      strokeDasharray="6 4"
-                      opacity="0.95"
-                    />
+                    <path d={dBench} fill="none" stroke="#2563EB" strokeWidth="2" strokeDasharray="6 4" opacity="0.95" />
 
                     {/* portfolio (solid) */}
                     <path d={dPort} fill="none" stroke="#111827" strokeWidth="2.5" opacity="0.95" />
@@ -740,9 +823,7 @@ function BenchmarkAndWinnersCard({
               </div>
               <div className="rounded-xl bg-panel px-3 py-2">
                 <div className="text-[11px] text-muted">Benchmark total</div>
-                <div className="mt-1 font-mono text-sm text-ink">
-                  {benchKpi ? formatPct(benchKpi.totalReturn) : "—"}
-                </div>
+                <div className="mt-1 font-mono text-sm text-ink">{benchKpi ? formatPct(benchKpi.totalReturn) : "—"}</div>
               </div>
             </div>
           </div>
@@ -751,27 +832,19 @@ function BenchmarkAndWinnersCard({
             <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
               <div className="rounded-xl bg-wash px-3 py-2">
                 <div className="text-[11px] text-muted">Portfolio CAGR</div>
-                <div className={`mt-1 font-mono text-sm ${portCagrCls}`}>
-                  {portfolioKpi ? formatPct(portfolioKpi.cagr) : "—"}
-                </div>
+                <div className={`mt-1 font-mono text-sm ${portCagrCls}`}>{portfolioKpi ? formatPct(portfolioKpi.cagr) : "—"}</div>
               </div>
               <div className="rounded-xl bg-wash px-3 py-2">
                 <div className="text-[11px] text-muted">Benchmark CAGR</div>
-                <div className={`mt-1 font-mono text-sm ${benchCagrCls}`}>
-                  {benchKpi ? formatPct(benchKpi.cagr) : "—"}
-                </div>
+                <div className={`mt-1 font-mono text-sm ${benchCagrCls}`}>{benchKpi ? formatPct(benchKpi.cagr) : "—"}</div>
               </div>
               <div className="rounded-xl bg-wash px-3 py-2">
                 <div className="text-[11px] text-muted">Portfolio max DD</div>
-                <div className={`mt-1 font-mono text-sm ${portDdCls}`}>
-                  {portfolioKpi ? formatPct(portfolioKpi.maxDrawdown) : "—"}
-                </div>
+                <div className={`mt-1 font-mono text-sm ${portDdCls}`}>{portfolioKpi ? formatPct(portfolioKpi.maxDrawdown) : "—"}</div>
               </div>
               <div className="rounded-xl bg-wash px-3 py-2">
                 <div className="text-[11px] text-muted">Benchmark max DD</div>
-                <div className={`mt-1 font-mono text-sm ${benchDdCls}`}>
-                  {benchKpi ? formatPct(benchKpi.maxDrawdown) : "—"}
-                </div>
+                <div className={`mt-1 font-mono text-sm ${benchDdCls}`}>{benchKpi ? formatPct(benchKpi.maxDrawdown) : "—"}</div>
               </div>
             </div>
           )}
@@ -788,14 +861,7 @@ function BenchmarkAndWinnersCard({
             ) : (
               <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {(() => {
-                  const winColors = [
-                    "#0B3D91",
-                    "#2F6F8F",
-                    "#1F7A6A",
-                    "#6D4C8F",
-                    "#B07D2B",
-                    "#C94C4C",
-                  ];
+                  const winColors = ["#0B3D91", "#2F6F8F", "#1F7A6A", "#6D4C8F", "#B07D2B", "#C94C4C"];
 
                   return winners.map((r, i) => {
                     const stroke = winColors[i % winColors.length];
@@ -840,12 +906,15 @@ function BenchmarkAndWinnersCard({
                           </div>
                           <div className="rounded-xl bg-wash px-2 py-2">
                             <div className="text-[11px] text-muted">Δ vs Port</div>
-                            <div className={`mt-0.5 font-mono text-[12px] ${cls(dPort)}`}>{dPort == null ? "—" : formatPct(dPort)}</div>
+                            <div className={`mt-0.5 font-mono text-[12px] ${cls(dPort)}`}>
+                              {dPort == null ? "—" : formatPct(dPort)}
+                            </div>
                           </div>
                         </div>
 
                         <div className="mt-2 text-[11px] text-muted">
-                          Δ vs bench: <span className={`font-mono ${cls(dBench)}`}>{dBench == null ? "—" : formatPct(dBench)}</span>
+                          Δ vs bench:{" "}
+                          <span className={`font-mono ${cls(dBench)}`}>{dBench == null ? "—" : formatPct(dBench)}</span>
                         </div>
                       </div>
                     );
@@ -873,6 +942,8 @@ export default function App() {
     { ticker: "AAPL", shares: 1 },
     { ticker: "MSFT", shares: 1 },
   ]);
+
+  const [rangeKey, setRangeKey] = useState<RangeKey>("1Y");
 
   const [computed, setComputed] = useState<{
     dates: string[];
@@ -985,9 +1056,31 @@ export default function App() {
             <div className="sticky top-6 space-y-4">
               <div className="rounded-2xl border border-border bg-panel p-4 shadow-soft">
                 <h2 className="text-sm font-semibold">Controls</h2>
-                <p className="mt-1 text-xs text-muted">
-                  Next: searchable ticker dropdown, date range, benchmark, weights editor.
-                </p>
+
+                <div className="mt-3">
+                  <div className="text-xs font-semibold">Time range</div>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {RANGE_OPTIONS.map((opt) => {
+                      const active = opt.key === rangeKey;
+                      return (
+                        <button
+                          key={opt.key}
+                          type="button"
+                          onClick={() => setRangeKey(opt.key)}
+                          className={
+                            "rounded-full px-3 py-1 text-[12px] font-semibold transition " +
+                            (active
+                              ? "bg-gray-200 text-ink border border-border shadow-soft"
+                              : "bg-panel text-ink hover:bg-wash border border-border")
+                          }
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div className="mt-2 text-[11px] text-muted">Applies to all charts on the right.</div>
+                </div>
               </div>
 
               <div className="rounded-2xl border border-border bg-panel p-4 shadow-soft">
@@ -1209,7 +1302,7 @@ export default function App() {
             <div className="grid grid-cols-12 gap-6">
               <section className="col-span-12 lg:col-span-8 rounded-2xl border border-border bg-panel p-4 shadow-soft">
                 <h3 className="text-sm font-semibold">Equity curve (demo)</h3>
-                <PriceDemoChart tickers={tickers} weights={weights} onComputed={setComputed} />
+                <PriceDemoChart tickers={tickers} weights={weights} rangeKey={rangeKey} onComputed={setComputed} />
               </section>
 
               <section className="col-span-12 lg:col-span-4 rounded-2xl border border-border bg-panel p-4 shadow-soft">
@@ -1294,6 +1387,7 @@ export default function App() {
                   portfolioWeights={weights}
                   portfolio={computed?.portfolio ?? null}
                   portfolioKpi={computed?.kpi ?? null}
+                  rangeKey={rangeKey}
                 />
               </section>
             </div>
