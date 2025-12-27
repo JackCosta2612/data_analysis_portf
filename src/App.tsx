@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import TickerPicker from "./components/TickerPicker";
 import Sparkline from "./components/Sparkline";
 
 type UniverseRow = {
@@ -7,6 +6,12 @@ type UniverseRow = {
   name: string;
   assetClass: string;
   riskBucket: string;
+};
+
+type BenchmarkMeta = {
+  ticker: string;
+  label: string;
+  market: "NASDAQ" | "NYSE" | "ALL";
 };
 
 type PricesDemo = {
@@ -17,6 +22,14 @@ type PricesDemo = {
 type KPI = { totalReturn: number; cagr: number; maxDrawdown: number };
 
 type RangeKey = "1D" | "5D" | "6M" | "YTD" | "1Y" | "5Y" | "ALL";
+
+type MarketKey = "ALL" | "NASDAQ" | "NYSE";
+
+const MARKET_OPTIONS: { key: MarketKey; label: string }[] = [
+  { key: "ALL", label: "All" },
+  { key: "NASDAQ", label: "NASDAQ" },
+  { key: "NYSE", label: "NYSE" },
+];
 
 const RANGE_OPTIONS: { key: RangeKey; label: string }[] = [
   { key: "1D", label: "1D" },
@@ -79,6 +92,133 @@ const AXIS_FONT_FAMILY =
 const AXIS_FONT_SIZE = 10;
 const AXIS_FILL = "#4B5563";
 
+
+function wantsIntraday(rangeKey: RangeKey) {
+  return rangeKey === "1D" || rangeKey === "5D";
+}
+
+
+// === Per-ticker data helpers ===
+type TickerSeriesFile = {
+  ticker: string;
+  dates: string[];
+  close: number[];
+  intervalMinutes?: number;
+};
+
+async function fetchJson<T>(url: string): Promise<T> {
+  const r = await fetch(url, { cache: "no-store" });
+  if (!r.ok) throw new Error(`HTTP ${r.status} for ${url}`);
+  const ct = (r.headers.get("content-type") || "").toLowerCase();
+  if (!ct.includes("application/json")) throw new Error(`Not JSON for ${url}`);
+  return (await r.json()) as T;
+}
+
+function marketDir(market: MarketKey) {
+  if (market === "NASDAQ") return "nasdaq";
+  if (market === "NYSE") return "nyse";
+  return "";
+}
+
+function priceFreq(rangeKey: RangeKey): "intraday" | "daily" {
+  return wantsIntraday(rangeKey) ? "intraday" : "daily";
+}
+
+const _tickerFileCache = new Map<string, TickerSeriesFile>();
+
+async function loadTickerFile(params: {
+  base: string;
+  market: MarketKey;
+  freq: "intraday" | "daily";
+  ticker: string;
+}): Promise<{ file: TickerSeriesFile; usedUrl: string; usedMarketDir: string }> {
+  const t = params.ticker.toUpperCase();
+  const mk = params.market;
+  const freq = params.freq;
+
+  const mkDirs = mk === "ALL" ? ["nasdaq", "nyse"] : [marketDir(mk)];
+
+  let lastErr: unknown = null;
+  for (const md of mkDirs) {
+    const url = `${params.base}data/${md}/${freq}/${t}.json`;
+    const cacheKey = `${md}:${freq}:${t}`;
+
+    if (_tickerFileCache.has(cacheKey)) {
+      return { file: _tickerFileCache.get(cacheKey)!, usedUrl: url, usedMarketDir: md };
+    }
+
+    try {
+      const file = await fetchJson<TickerSeriesFile>(url);
+      _tickerFileCache.set(cacheKey, file);
+      return { file, usedUrl: url, usedMarketDir: md };
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+
+  throw new Error(
+    `Missing ticker file for ${t} (${freq}) in market=${mk}. Last error: ${
+      lastErr instanceof Error ? lastErr.message : String(lastErr)
+    }`
+  );
+}
+
+const _benchFileCache = new Map<string, TickerSeriesFile>();
+
+async function loadBenchmarkFile(params: {
+  base: string;
+  freq: "intraday" | "daily";
+  ticker: string;
+}): Promise<{ file: TickerSeriesFile; usedUrl: string }> {
+  const t = params.ticker.toUpperCase();
+  const freq = params.freq;
+
+  const url = `${params.base}data/benchmarks/${freq}/${t}.json`;
+  const cacheKey = `${freq}:${t}`;
+
+  if (_benchFileCache.has(cacheKey)) {
+    return { file: _benchFileCache.get(cacheKey)!, usedUrl: url };
+  }
+
+  const file = await fetchJson<TickerSeriesFile>(url);
+  _benchFileCache.set(cacheKey, file);
+  return { file, usedUrl: url };
+}
+
+function unionSortedDates(series: { dates: string[] }[]) {
+  const s = new Set<string>();
+  for (const x of series) for (const d of x.dates ?? []) if (typeof d === "string") s.add(d);
+  return [...s].sort((a, b) => a.localeCompare(b));
+}
+
+function forwardFillSeries(calendar: string[], dateToValue: Map<string, number>) {
+  const out: number[] = new Array<number>(calendar.length);
+  let last: number | null = null;
+  for (let i = 0; i < calendar.length; i++) {
+    const d = calendar[i];
+    const v = dateToValue.get(d);
+    if (Number.isFinite(v)) last = v as number;
+    out[i] = last == null ? NaN : last;
+  }
+  return out;
+}
+
+function buildPricesDemoFromTickerFiles(files: { ticker: string; dates: string[]; close: number[] }[]): PricesDemo {
+  const dates = unionSortedDates(files);
+  const series: Record<string, number[]> = {};
+  for (const f of files) {
+    const m = new Map<string, number>();
+    const n = Math.min(f.dates?.length ?? 0, f.close?.length ?? 0);
+    for (let i = 0; i < n; i++) {
+      const d = f.dates[i];
+      const v = f.close[i];
+      if (typeof d === "string" && Number.isFinite(v)) m.set(d, v as number);
+    }
+    series[f.ticker.toUpperCase()] = forwardFillSeries(dates, m);
+  }
+  return { dates, series };
+}
+
 function firstFinite(xs: number[]): number | null {
   for (const v of xs) {
     if (Number.isFinite(v)) return v as number;
@@ -121,39 +261,75 @@ function kpisFromIndex(series: number[], dates: string[]): KPI {
 function TickerPriceCards({
   tickers,
   rangeKey,
+  market,
   placement = "sidebar",
 }: {
   tickers: string[];
   rangeKey: RangeKey;
+  market: MarketKey;
   placement?: "sidebar" | "main";
 }) {
   const [prices, setPrices] = useState<PricesDemo | null>(null);
   const [universe, setUniverse] = useState<UniverseRow[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [source, setSource] = useState<string>("");
 
   useEffect(() => {
     const base = import.meta.env.BASE_URL || "/";
-    const uPricesReal = `${base}data/prices.json`;
-    const uPricesDemo = `${base}data/prices_demo.json`;
+    const freq = priceFreq(rangeKey);
+
     const uUniverse = `${base}data/universe.json`;
 
     (async () => {
       try {
         setErr(null);
-        const [rP0, rU] = await Promise.all([fetch(uPricesReal), fetch(uUniverse)]);
-        const rP = rP0.ok ? rP0 : await fetch(uPricesDemo);
-        if (!rP.ok || !rU.ok) {
-          throw new Error(`Fetch failed: prices(real=${rP0.status}, demo=${rP.status}) universe=${rU.status} (base=${base})`);
+
+        const [uni, files] = await Promise.all([
+          fetchJson<UniverseRow[]>(uUniverse),
+          (async () => {
+            const wanted = tickers
+              .map((t) => t.toUpperCase())
+              .slice(0, placement === "main" ? 24 : 12);
+
+            const out: TickerSeriesFile[] = [];
+            let anyUrl = "";
+
+            for (const t of wanted) {
+              try {
+                const res = await loadTickerFile({ base, market, freq, ticker: t });
+                out.push({
+                  ticker: t,
+                  dates: res.file.dates,
+                  close: res.file.close,
+                  intervalMinutes: res.file.intervalMinutes,
+                });
+                anyUrl = res.usedUrl;
+              } catch {
+                // ignore missing tickers in this market
+              }
+            }
+
+            if (anyUrl) setSource(anyUrl);
+            return out;
+          })(),
+        ]);
+
+        setUniverse(uni);
+
+        if (files.length === 0) {
+          setPrices({ dates: [], series: {} });
+          return;
         }
-        setPrices((await rP.json()) as PricesDemo);
-        setUniverse((await rU.json()) as UniverseRow[]);
+
+        setPrices(buildPricesDemoFromTickerFiles(files));
       } catch (e) {
         setErr(e instanceof Error ? e.message : String(e));
         setPrices(null);
         setUniverse(null);
+        setSource("");
       }
     })();
-  }, []);
+  }, [market, rangeKey, tickers, placement]);
 
   const uniMap = useMemo(() => {
     const m = new Map<string, UniverseRow>();
@@ -176,6 +352,12 @@ function TickerPriceCards({
     if (!prices) return [] as string[];
     return selIdx.map((i) => prices.dates[i]).filter((d) => typeof d === "string");
   }, [prices, selIdx]);
+
+  const fmtDate = (d: string) => {
+    if (!d) return d;
+    if (d.includes("T")) return d.slice(0, 16).replace("T", " ");
+    return d;
+  };
 
   const LineCard = ({ t }: { t: string }) => {
     const y0 = prices?.series?.[t] ?? [];
@@ -211,13 +393,13 @@ function TickerPriceCards({
     }
 
     // Yahoo-finance style: line + light area fill, minimal axes.
-    const labelGutter = 26;
-    const viewW = 360 + labelGutter;
+    // Render axis labels outside the SVG (stable font sizing).
+    const viewW = 360;
     const viewH = 140;
-    const left = 10 + labelGutter;
+    const left = 10;
     const right = 10;
     const top = 8;
-    const bottom = 22;
+    const bottom = 12;
     const W = viewW - left - right;
     const H = viewH - top - bottom;
 
@@ -260,58 +442,58 @@ function TickerPriceCards({
         </div>
 
         <div className="mt-3 rounded-xl bg-wash p-2">
-          <svg
-            viewBox={`0 0 ${viewW} ${viewH}`}
-            className="w-full"
-            style={{ fontFamily: AXIS_FONT_FAMILY, fontSize: AXIS_FONT_SIZE, fill: AXIS_FILL }}
-          >
-            {/* subtle grid */}
-            <line x1={left} y1={top + H} x2={left + W} y2={top + H} stroke="#E5E7EB" />
-            <line x1={left} y1={top + H * 0.5} x2={left + W} y2={top + H * 0.5} stroke="#F3F4F6" />
-
-            {/* area */}
-            <path d={dArea} fill={fill} stroke="none" />
-
-            {/* line */}
-            <path d={dLine} fill="none" stroke={stroke} strokeWidth="2.25" />
-
-            {/* y labels (outside plot, in gutter) */}
-            <text
-              x={left - 8}
-              y={top + 10}
-              textAnchor="end"
-              fontFamily={AXIS_FONT_FAMILY}
-              fontSize={AXIS_FONT_SIZE}
-              fill={AXIS_FILL}
+          <div className="grid grid-cols-[auto,1fr] items-stretch gap-2">
+            {/* Y-axis labels (outside SVG so font size is stable) */}
+            <div
+              className="flex flex-col justify-between text-right"
+              style={{
+                width: 44,
+                paddingTop: top,
+                paddingBottom: bottom,
+                fontFamily: AXIS_FONT_FAMILY,
+                fontSize: AXIS_FONT_SIZE,
+                color: AXIS_FILL,
+              }}
             >
-              {ymax0.toFixed(1)}
-            </text>
-            <text
-              x={left - 8}
-              y={top + H + 6}
-              textAnchor="end"
-              fontFamily={AXIS_FONT_FAMILY}
-              fontSize={AXIS_FONT_SIZE}
-              fill={AXIS_FILL}
-            >
-              {ymin0.toFixed(1)}
-            </text>
+              <div style={{ lineHeight: 1 }}>{ymax0.toFixed(1)}</div>
+              <div style={{ lineHeight: 1 }}>{ymin0.toFixed(1)}</div>
+            </div>
 
-            {/* start/end dates */}
-            <text x={left} y={viewH - 6} fontFamily={AXIS_FONT_FAMILY} fontSize={AXIS_FONT_SIZE} fill={AXIS_FILL}>
-              {datesR[0]}
-            </text>
-            <text
-              x={left + W}
-              y={viewH - 6}
-              textAnchor="end"
-              fontFamily={AXIS_FONT_FAMILY}
-              fontSize={AXIS_FONT_SIZE}
-              fill={AXIS_FILL}
-            >
-              {datesR[datesR.length - 1]}
-            </text>
-          </svg>
+            <div className="min-w-0">
+              <div className="aspect-[360/140] w-full">
+                <svg
+                  viewBox={`0 0 ${viewW} ${viewH}`}
+                  className="h-full w-full"
+                  style={{ fontFamily: AXIS_FONT_FAMILY, fontSize: AXIS_FONT_SIZE, fill: AXIS_FILL }}
+                >
+                  {/* subtle grid */}
+                  <line x1={left} y1={top + H} x2={left + W} y2={top + H} stroke="#E5E7EB" />
+                  <line x1={left} y1={top + H * 0.5} x2={left + W} y2={top + H * 0.5} stroke="#F3F4F6" />
+
+                  {/* area */}
+                  <path d={dArea} fill={fill} stroke="none" />
+
+                  {/* line */}
+                  <path d={dLine} fill="none" stroke={stroke} strokeWidth="2.25" />
+                </svg>
+              </div>
+
+              {/* X-axis labels (outside SVG so font size is stable) */}
+              <div
+                className="mt-1 flex justify-between"
+                style={{
+                  paddingLeft: left,
+                  paddingRight: right,
+                  fontFamily: AXIS_FONT_FAMILY,
+                  fontSize: AXIS_FONT_SIZE,
+                  color: AXIS_FILL,
+                }}
+              >
+                <span>{fmtDate(datesR[0])}</span>
+                <span>{fmtDate(datesR[datesR.length - 1])}</span>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div className="mt-2 flex items-center justify-between text-[11px] text-muted">
@@ -332,6 +514,11 @@ function TickerPriceCards({
         <div className="text-sm font-semibold">Tickers</div>
         <div className="mt-2 text-xs text-red-600">
           Data load failed: <span className="font-mono">{err}</span>
+          {source ? (
+            <div className="mt-1 text-[11px] text-muted">
+              Source: <span className="font-mono">{source}</span>
+            </div>
+          ) : null}
         </div>
       </div>
     );
@@ -341,7 +528,7 @@ function TickerPriceCards({
     return (
       <div className="rounded-2xl border border-border bg-panel p-4 shadow-soft">
         <div className="text-sm font-semibold">Tickers</div>
-        <div className="mt-2 text-xs text-muted">Loading ticker charts…</div>
+        <div className="mt-2 text-xs text-muted">Loading ticker charts… <span className="font-mono">{market}</span> · <span className="font-mono">{rangeKey}</span></div>
       </div>
     );
   }
@@ -355,11 +542,21 @@ function TickerPriceCards({
     );
   }
 
+  const seriesCount = prices ? Object.keys(prices.series ?? {}).length : 0;
+
   return (
-    <div className={placement === "main" ? "grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3" : "space-y-4"}>
-      {shown.map((t) => (
-        <LineCard key={t} t={t} />
-      ))}
+    <div>
+      {placement === "main" ? (
+        <div className="mb-2 text-[11px] text-muted">
+          Data: <span className="font-mono">{source ? source.split("/").slice(-1)[0] : "(unknown)"}</span> · Series: <span className="font-mono">{seriesCount}</span>
+        </div>
+      ) : null}
+
+      <div className={placement === "main" ? "grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3" : "space-y-4"}>
+        {shown.map((t) => (
+          <LineCard key={t} t={t} />
+        ))}
+      </div>
     </div>
   );
 }
@@ -373,33 +570,70 @@ function PriceDemoChart({
   tickers: string[];
   weights: { ticker: string; w: number }[];
   rangeKey: RangeKey;
+  market: MarketKey;
   onComputed?: (x: { dates: string[]; portfolio: number[] | null; kpi: KPI | null }) => void;
 }) {
   const [data, setData] = useState<PricesDemo | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [source, setSource] = useState<string>("");
 
   useEffect(() => {
+    let cancelled = false;
+
     const base = import.meta.env.BASE_URL || "/";
-    const urlReal = `${base}data/prices.json`;
-    const urlDemo = `${base}data/prices_demo.json`;
+    const freq = priceFreq(rangeKey);
 
     (async () => {
       try {
+        if (cancelled) return;
         setErr(null);
-        const r0 = await fetch(urlReal);
-        const r = r0.ok ? r0 : await fetch(urlDemo);
-        if (!r.ok) throw new Error(`Fetch failed: real=${r0.status} demo=${r.status} (base=${base})`);
-        setData((await r.json()) as PricesDemo);
+        setSource("");
+
+        const wanted = tickers.map((t) => t.toUpperCase());
+        const files: TickerSeriesFile[] = [];
+        let anyUrl = "";
+
+        for (const t of wanted) {
+          try {
+            const res = await loadTickerFile({ base, market: "ALL", freq, ticker: t });
+            if (cancelled) return;
+            files.push({
+              ticker: t,
+              dates: res.file.dates,
+              close: res.file.close,
+              intervalMinutes: res.file.intervalMinutes,
+            });
+            anyUrl = res.usedUrl;
+          } catch {
+            // ignore missing tickers
+          }
+        }
+
+        if (cancelled) return;
+
+        if (!files.length) {
+          setData({ dates: [], series: {} });
+          return;
+        }
+
+        setData(buildPricesDemoFromTickerFiles(files));
+        if (anyUrl) setSource(anyUrl);
       } catch (e) {
+        if (cancelled) return;
         setErr(e instanceof Error ? e.message : String(e));
         setData(null);
+        setSource("");
       }
     })();
-  }, []);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [rangeKey, tickers]);
 
   const shown = useMemo(() => {
     if (!data) return [] as string[];
-    return tickers.filter((t) => t in data.series).slice(0, 8);
+    return tickers.filter((t) => t in data.series);
   }, [data, tickers]);
 
   const selIdx = useMemo(() => {
@@ -427,12 +661,19 @@ function PriceDemoChart({
   const portfolio = useMemo(() => {
     if (!data || series.length === 0) return null as null | number[];
 
-    const wmap = new Map(weights.map((x) => [x.ticker, x.w] as const));
+    const wmap = new Map(weights.map((x) => [x.ticker.toUpperCase(), x.w] as const));
+
+    // Renormalize weights to the subset of tickers that exist in the loaded dataset.
+    let wSum = 0;
+    for (const s of series) wSum += wmap.get(s.t.toUpperCase()) ?? 0;
+    if (!Number.isFinite(wSum) || wSum <= 0) return null;
+
     const n = datesR.length;
     const out = new Array<number>(n).fill(0);
 
     for (const s of series) {
-      const w = wmap.get(s.t) ?? 0;
+      const wRaw = wmap.get(s.t.toUpperCase()) ?? 0;
+      const w = wRaw / wSum;
       for (let i = 0; i < n; i++) {
         const v = s.idx[i];
         out[i] += (Number.isFinite(v) ? (v as number) : 0) * w;
@@ -471,7 +712,7 @@ function PriceDemoChart({
   if (shown.length === 0) {
     return (
       <div className="mt-3 text-xs text-muted">
-        Select tickers that exist in <span className="font-mono">prices_demo.json</span>.
+        Select tickers that exist in the loaded dataset.
       </div>
     );
   }
@@ -648,7 +889,7 @@ function PriceDemoChart({
       )}
 
       <div className="mt-3 text-[11px] text-muted">
-        Demo data only (static). Next: real returns, benchmarks, and risk metrics.
+        Using local JSON prices. Source: <span className="font-mono">{source ? source.split("/").slice(-1)[0] : "(unknown)"}</span>
       </div>
     </div>
   );
@@ -666,46 +907,117 @@ function BenchmarkAndWinnersCard({
   portfolio: number[] | null;
   portfolioKpi: KPI | null;
   rangeKey: RangeKey;
+  market: MarketKey;
 }) {
   const [universe, setUniverse] = useState<UniverseRow[] | null>(null);
   const [prices, setPrices] = useState<PricesDemo | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [source, setSource] = useState<string>("");
+  const [benchMeta, setBenchMeta] = useState<BenchmarkMeta[]>([]);
 
-  const BENCH_CANDIDATES: { ticker: string; label: string }[] = [
-    { ticker: "SPY", label: "SPY · S&P 500" },
-    { ticker: "QQQ", label: "QQQ · Nasdaq 100" },
-    { ticker: "VT", label: "VT · Global equities" },
-    { ticker: "VEA", label: "VEA · Developed ex-US" },
-    { ticker: "EEM", label: "EEM · Emerging markets" },
-    { ticker: "AGG", label: "AGG · US bonds" },
-    { ticker: "GLD", label: "GLD · Gold" },
-  ];
-
-  const [benchmark, setBenchmark] = useState<string>("SPY");
+  const [benchmark, setBenchmark] = useState<string>("QQQ");
 
   useEffect(() => {
+    let cancelled = false;
+
     const base = import.meta.env.BASE_URL || "/";
+    const freq = priceFreq(rangeKey);
     const uUniverse = `${base}data/universe.json`;
-    const uPricesReal = `${base}data/prices.json`;
-    const uPricesDemo = `${base}data/prices_demo.json`;
+    const uBench = `${base}data/benchmarks/benchmarks.json`;
 
     (async () => {
       try {
+        if (cancelled) return;
         setErr(null);
-        const [rU, rP0] = await Promise.all([fetch(uUniverse), fetch(uPricesReal)]);
-        const rP = rP0.ok ? rP0 : await fetch(uPricesDemo);
-        if (!rU.ok || !rP.ok) {
-          throw new Error(`Fetch failed: universe=${rU.status} prices(real=${rP0.status}, demo=${rP.status}) (base=${base})`);
+        setSource("");
+
+        const [uni, bmRaw] = await Promise.all([
+          fetchJson<UniverseRow[]>(uUniverse),
+          fetchJson<any[]>(uBench).catch(() => [] as any[]),
+        ]);
+
+        if (cancelled) return;
+        setUniverse(uni);
+
+        const bm = (bmRaw ?? [])
+          .filter((x) => x && typeof x.ticker === "string")
+          .map((x) => {
+            const t = String(x.ticker).toUpperCase();
+            const lbl = typeof x.label === "string" ? x.label : t;
+            const m0 = String(x.market ?? "ALL").toUpperCase();
+            const m: BenchmarkMeta["market"] = m0 === "NASDAQ" ? "NASDAQ" : m0 === "NYSE" ? "NYSE" : "ALL";
+            return { ticker: t, label: lbl, market: m } as BenchmarkMeta;
+          });
+
+        setBenchMeta(bm);
+
+        const neededStocks = new Set<string>();
+        for (const t of portfolioTickers) neededStocks.add(String(t).toUpperCase());
+        for (const r of uni) neededStocks.add(String(r.ticker).toUpperCase());
+
+        const stockFiles: TickerSeriesFile[] = [];
+        let anyUrl = "";
+
+        for (const t of neededStocks) {
+          try {
+            // Search both market directories regardless of Controls selection.
+            const res = await loadTickerFile({ base, market: "ALL", freq, ticker: t });
+            if (cancelled) return;
+            stockFiles.push({
+              ticker: t,
+              dates: res.file.dates,
+              close: res.file.close,
+              intervalMinutes: res.file.intervalMinutes,
+            });
+            anyUrl = res.usedUrl;
+          } catch {
+            // ignore missing
+          }
         }
-        setUniverse((await rU.json()) as UniverseRow[]);
-        setPrices((await rP.json()) as PricesDemo);
+
+        // Benchmarks are loaded from the dedicated benchmarks directory.
+        const benchFiles: TickerSeriesFile[] = [];
+        for (const b of bm) {
+          try {
+            const res = await loadBenchmarkFile({ base, freq, ticker: b.ticker });
+            if (cancelled) return;
+            benchFiles.push({
+              ticker: b.ticker,
+              dates: res.file.dates,
+              close: res.file.close,
+              intervalMinutes: res.file.intervalMinutes,
+            });
+            anyUrl = anyUrl || res.usedUrl;
+          } catch {
+            // ignore missing
+          }
+        }
+
+        const files = [...stockFiles, ...benchFiles];
+
+        if (cancelled) return;
+
+        if (!files.length) {
+          setPrices({ dates: [], series: {} });
+          return;
+        }
+
+        setPrices(buildPricesDemoFromTickerFiles(files));
+        if (anyUrl) setSource(anyUrl);
       } catch (e) {
+        if (cancelled) return;
         setErr(e instanceof Error ? e.message : String(e));
         setUniverse(null);
+        setBenchMeta([]);
         setPrices(null);
+        setSource("");
       }
     })();
-  }, []);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [rangeKey, portfolioTickers]);
 
   const selIdx = useMemo(() => {
     if (!prices) return [] as number[];
@@ -723,15 +1035,82 @@ function BenchmarkAndWinnersCard({
     return m;
   }, [universe]);
 
+  const normalizeBucket = (b: string | null | undefined) => {
+    const x = String(b ?? "").trim().toLowerCase();
+    if (!x) return "unknown";
+    if (x.startsWith("low")) return "low";
+    if (x.startsWith("med")) return "medium";
+    if (x.startsWith("high")) return "high";
+    if (x.includes("low")) return "low";
+    if (x.includes("medium") || x.includes("mid")) return "medium";
+    if (x.includes("high")) return "high";
+    if (x.includes("unknown")) return "unknown";
+    return x;
+  };
+
+  const bucketLabel = (b: string) => {
+    if (b === "low") return "Low";
+    if (b === "medium") return "Medium";
+    if (b === "high") return "High";
+    return b === "unknown" ? "Unknown" : b;
+  };
+
+  const adjacentBuckets = (b: string) => {
+    if (b === "low") return ["low", "medium"];
+    if (b === "medium") return ["medium", "low", "high"];
+    if (b === "high") return ["high", "medium"];
+    return ["unknown", "low", "medium", "high"];
+  };
+
+  const fallbackBucketForTicker = (t: string) => {
+    const T = t.toUpperCase();
+
+    const meta = uniMap.get(T);
+    const asset = String(meta?.assetClass ?? "").toLowerCase();
+    const name = String(meta?.name ?? "").toLowerCase();
+
+    const hay = `${asset} ${name}`;
+
+    if (
+      hay.includes("bond") ||
+      hay.includes("treasury") ||
+      hay.includes("t-bill") ||
+      hay.includes("money market") ||
+      hay.includes("cash")
+    ) {
+      return "low";
+    }
+    if (hay.includes("utilities") || hay.includes("consumer staples") || hay.includes("dividend")) {
+      return "low";
+    }
+
+    if (
+      hay.includes("emerging") ||
+      hay.includes("china") ||
+      hay.includes("biotech") ||
+      hay.includes("semiconductor") ||
+      hay.includes("technology") ||
+      hay.includes("sector")
+    ) {
+      return "high";
+    }
+    if (hay.includes("leveraged") || hay.includes("2x") || hay.includes("3x") || hay.includes("crypto")) {
+      return "high";
+    }
+
+    return "medium";
+  };
+
   const availableBench = useMemo(() => {
     if (!prices) return [] as { ticker: string; label: string }[];
-    const s = prices.series ?? {};
-    const filtered = BENCH_CANDIDATES.filter((b) => b.ticker in s);
-    if (filtered.length > 0) return filtered;
 
-    const keys = Object.keys(s).slice(0, 6);
-    return keys.map((k) => ({ ticker: k, label: `${k} · (demo series)` }));
-  }, [prices]);
+    const s = prices.series ?? {};
+    return (benchMeta ?? [])
+      .filter((b) => b?.ticker)
+      .map((b) => ({ ticker: String(b.ticker).toUpperCase(), label: b.label }))
+      .filter((b) => b.ticker in s)
+      .map((b) => ({ ticker: b.ticker, label: b.label || b.ticker }));
+  }, [prices, benchMeta]);
 
   useEffect(() => {
     if (!availableBench.length) return;
@@ -741,22 +1120,27 @@ function BenchmarkAndWinnersCard({
   }, [availableBench, benchmark]);
 
   const inferredRiskBucket = useMemo(() => {
-    if (!portfolioWeights.length) return "—";
+    if (!portfolioWeights.length) return "unknown";
 
     const byBucket = new Map<string, number>();
+
     for (const w of portfolioWeights) {
-      const bucket = uniMap.get(w.ticker)?.riskBucket ?? "Unknown";
+      const t = w.ticker.toUpperCase();
+      const raw = uniMap.get(t)?.riskBucket;
+      const nb = normalizeBucket(raw);
+      const bucket = nb !== "unknown" ? nb : fallbackBucketForTicker(t);
       byBucket.set(bucket, (byBucket.get(bucket) ?? 0) + w.w);
     }
 
-    let best = "Unknown";
+    let best = "unknown";
     let bestW = -1;
-    for (const [b, w] of byBucket.entries()) {
-      if (w > bestW) {
-        bestW = w;
+    for (const [b, ww] of byBucket.entries()) {
+      if (ww > bestW) {
+        bestW = ww;
         best = b;
       }
     }
+
     return best;
   }, [portfolioWeights, uniMap]);
 
@@ -785,10 +1169,14 @@ function BenchmarkAndWinnersCard({
 
     const candidates = universe
       .map((r) => ({ ...r, ticker: r.ticker.toUpperCase() }))
-      .filter((r) => r.riskBucket === inferredRiskBucket)
+      .filter((r) => {
+        const rb = normalizeBucket(r.riskBucket);
+        const want = adjacentBuckets(inferredRiskBucket);
+        return want.includes(rb);
+      })
       .filter((r) => r.ticker in s)
       .filter((r) => !portfolioSet.has(r.ticker))
-      .filter((r) => r.ticker !== benchmark);
+      .filter((r) => r.ticker !== benchmark.toUpperCase());
 
     const scored = candidates
       .map((r) => {
@@ -856,17 +1244,27 @@ function BenchmarkAndWinnersCard({
             <div className="text-[11px] text-muted">
               Risk bucket inferred from current portfolio:{" "}
               <span className="ml-1 rounded-full border border-border bg-wash px-2 py-0.5 font-mono text-ink">
-                {inferredRiskBucket}
+                {bucketLabel(inferredRiskBucket)}
               </span>
             </div>
 
             <div className="flex items-center gap-2">
               <div className="text-xs text-muted">Benchmark</div>
               <select
-                className="rounded-xl border border-border bg-panel px-3 py-2 text-sm"
+                className={
+                  "rounded-xl border border-border bg-panel px-3 py-2 text-sm " +
+                  (!availableBench.length ? "text-muted" : "")
+                }
                 value={benchmark}
                 onChange={(e) => setBenchmark(e.target.value)}
+                disabled={!availableBench.length}
               >
+                {!availableBench.length ? (
+                  <option value="" key="_none">
+                    No benchmarks available
+                  </option>
+                ) : null}
+
                 {availableBench.map((b) => (
                   <option key={b.ticker} value={b.ticker}>
                     {b.label}
@@ -904,7 +1302,7 @@ function BenchmarkAndWinnersCard({
 
             {!combined ? (
               <div className="mt-3 text-xs text-muted">
-                Select tickers (and a benchmark that exists in the demo dataset) to render a comparison.
+                Select tickers (and a benchmark that exists in the loaded data) to render a comparison.
               </div>
             ) : (
               (() => {
@@ -1037,12 +1435,12 @@ function BenchmarkAndWinnersCard({
           <div className="mt-5">
             <div className="text-xs font-semibold">Similar-risk winners</div>
             <div className="mt-1 text-[11px] text-muted">
-              Top performers in the same <span className="font-mono">riskBucket</span> ({inferredRiskBucket}) that
+              Top performers in the same <span className="font-mono">riskBucket</span> ({bucketLabel(inferredRiskBucket)}) that
               outperform the current portfolio (when possible).
             </div>
 
             {winners.length === 0 ? (
-              <div className="mt-3 text-xs text-muted">No comparable tickers found in the current demo dataset.</div>
+              <div className="mt-3 text-xs text-muted">No comparable tickers found in the loaded data.</div>
             ) : (
               <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {(() => {
@@ -1110,11 +1508,241 @@ function BenchmarkAndWinnersCard({
           </div>
 
           <div className="mt-4 text-[11px] text-muted">
-            Demo logic uses <span className="font-mono">universe.json</span> (risk buckets) +{" "}
-            <span className="font-mono">prices_demo.json</span> (static prices). Next: replace with real historical data.
+            Universe metadata from <span className="font-mono">universe.json</span>. Prices source: <span className="font-mono">{source ? source.split("/").slice(-1)[0] : "(unknown)"}</span>.
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+function LocalTickerPicker({
+  value,
+  onChange,
+  market,
+}: {
+  value: string[];
+  onChange: (next: string[]) => void;
+  market: MarketKey;
+}) {
+  const [options, setOptions] = useState<string[]>([]);
+  const [q, setQ] = useState<string>("");
+  const [err, setErr] = useState<string | null>(null);
+  const [src, setSrc] = useState<string>("");
+  const [browseOpen, setBrowseOpen] = useState(false);
+  const [browseCount, setBrowseCount] = useState(400);
+
+  useEffect(() => {
+    const base = import.meta.env.BASE_URL || "/";
+
+    (async () => {
+      try {
+        setErr(null);
+        setSrc("");
+
+        const url =
+          market === "ALL"
+            ? `${base}data/tickers_all.json`
+            : `${base}data/${marketDir(market)}/tickers.json`;
+
+        const tickers = await fetchJson<string[]>(url);
+        const cleaned = (tickers ?? [])
+          .map((t) => String(t).toUpperCase())
+          .filter((t) => t.length > 0)
+          .sort((a, b) => a.localeCompare(b));
+
+        setOptions(cleaned);
+        setSrc(url);
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : String(e));
+        setOptions([]);
+        setSrc("");
+      }
+    })();
+  }, [market]);
+
+
+  const selected = useMemo(() => new Set(value.map((t) => t.toUpperCase())), [value]);
+
+  const POPULAR: Record<MarketKey, string[]> = {
+    NASDAQ: ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO", "COST"],
+    NYSE: ["BRK.B", "JPM", "JNJ", "V", "PG", "UNH", "XOM", "HD", "WMT"],
+    ALL: ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "BRK.B", "JPM", "JNJ", "XOM"],
+  };
+
+  const allowedSet = useMemo(() => new Set(options.map((t) => t.toUpperCase())), [options]);
+
+  const popularSuggestions = useMemo(() => {
+    const base = POPULAR[market] ?? POPULAR.ALL;
+    return base
+      .map((t) => t.toUpperCase())
+      .filter((t) => allowedSet.has(t))
+      .filter((t) => !selected.has(t));
+  }, [market, allowedSet, selected]);
+
+  const filtered = useMemo(() => {
+    const qq = q.trim().toUpperCase();
+    const xs = options.filter((t) => !selected.has(t));
+
+    if (!qq) {
+      const LIMIT = 12;
+      return popularSuggestions.slice(0, LIMIT);
+    }
+
+    return xs.filter((t) => t.includes(qq)).slice(0, 25);
+  }, [options, q, selected, popularSuggestions]);
+
+  const browseList = useMemo(() => {
+    const qq = q.trim().toUpperCase();
+    const xs = options.filter((t) => !selected.has(t));
+    if (!qq) return xs;
+    return xs.filter((t) => t.includes(qq));
+  }, [options, q, selected]);
+
+  useEffect(() => {
+    // Reset browse pagination when inputs change
+    setBrowseCount(400);
+  }, [market, q, options.length, value.length]);
+
+  const add = (t: string) => {
+    const T = t.toUpperCase();
+    if (!T || selected.has(T)) return;
+    onChange([...value, T]);
+    setQ("");
+  };
+  const remove = (t: string) => {
+    const T = t.toUpperCase();
+    onChange(value.filter((x) => x.toUpperCase() !== T));
+  };
+
+  return (
+    <div>
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-sm font-semibold">Ticker picker</h3>
+          <div className="mt-1 text-xs text-muted">Search and select tickers (local Stooq lists).</div>
+        </div>
+        <div className="text-[11px] text-muted">
+          <span className="font-mono">{value.length}</span>
+          <span className="mx-1">/</span>
+          <span className="font-mono">10</span>
+        </div>
+      </div>
+
+      <div className="mt-3">
+        <input
+          className="w-full rounded-xl border border-border bg-panel px-3 py-2 font-mono text-sm text-ink placeholder:text-muted"
+          placeholder="Type a ticker (e.g., AAPL)"
+          value={q}
+          onChange={(e) => {
+            setQ(e.target.value);
+            setBrowseOpen(true);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && filtered.length) add(filtered[0]);
+          }}
+        />
+
+        {err ? (
+          <div className="mt-2 text-xs text-red-600">
+            Ticker list failed: <span className="font-mono">{err}</span>
+          </div>
+        ) : (
+          <div className="mt-2 rounded-xl border border-border bg-wash p-2">
+            {filtered.length === 0 ? (
+              <div className="text-xs text-muted">No matches.</div>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {filtered.map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    className="rounded-full border border-border bg-panel px-3 py-1 text-[12px] font-semibold text-ink hover:bg-wash"
+                    onClick={() => add(t)}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Dropdown-style manual browser */}
+        <div className="mt-2">
+          <button
+            type="button"
+            onClick={() => setBrowseOpen((v) => !v)}
+            className="w-full rounded-xl border border-border bg-panel px-3 py-2 text-left text-sm font-semibold text-ink hover:bg-wash"
+          >
+            {browseOpen ? "Hide" : "Browse"} all tickers
+            <span className="ml-2 text-[11px] font-normal text-muted">({browseList.length.toLocaleString()})</span>
+          </button>
+
+          {browseOpen ? (
+            <div
+              className="mt-2 max-h-56 overflow-auto rounded-xl border border-border bg-wash p-2"
+              onScroll={(e) => {
+                const el = e.currentTarget;
+                if (el.scrollTop + el.clientHeight >= el.scrollHeight - 24) {
+                  setBrowseCount((c) => Math.min(c + 400, browseList.length));
+                }
+              }}
+            >
+              {browseList.length === 0 ? (
+                <div className="text-xs text-muted">No matches.</div>
+              ) : (
+                <div className="flex flex-col gap-1">
+                  {browseList.slice(0, browseCount).map((t) => (
+                    <button
+                      key={t}
+                      type="button"
+                      className="flex items-center justify-between rounded-lg px-3 py-2 text-sm font-mono text-ink hover:bg-panel"
+                      onClick={() => add(t)}
+                    >
+                      <span>{t}</span>
+                      <span className="text-[11px] font-sans text-muted">Add</span>
+                    </button>
+                  ))}
+
+                  {browseCount < browseList.length ? (
+                    <div className="mt-2 text-center text-[11px] text-muted">
+                      Scroll to load more…
+                    </div>
+                  ) : null}
+                </div>
+              )}
+            </div>
+          ) : null}
+        </div>
+
+        {src ? (
+          <div className="mt-2 text-[11px] text-muted">
+            Source: <span className="font-mono">{src.split("/").slice(-2).join("/")}</span>
+          </div>
+        ) : null}
+      </div>
+
+      {value.length > 0 ? (
+        <div className="mt-3">
+          <div className="text-[11px] text-muted">Selected</div>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {value.map((t) => (
+              <div key={t} className="flex items-center gap-2 rounded-full border border-border bg-panel px-3 py-1">
+                <span className="font-mono text-[12px] text-ink">{t.toUpperCase()}</span>
+                <button
+                  type="button"
+                  className="text-[12px] font-semibold text-muted hover:text-ink"
+                  onClick={() => remove(t)}
+                  aria-label={`Remove ${t}`}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1129,6 +1757,86 @@ export default function App() {
   ]);
 
   const [rangeKey, setRangeKey] = useState<RangeKey>("1Y");
+  const [market, setMarket] = useState<MarketKey>("ALL");
+
+  const [activeMarkets, setActiveMarkets] = useState<{ NASDAQ: boolean; NYSE: boolean }>({
+    NASDAQ: true,
+    NYSE: true,
+  });
+
+  const [nasdaqTickers, setNasdaqTickers] = useState<string[]>([]);
+  const [nyseTickers, setNyseTickers] = useState<string[]>([]);
+
+  useEffect(() => {
+    const base = import.meta.env.BASE_URL || "/";
+
+    (async () => {
+      try {
+        const [nas, ny] = await Promise.all([
+          fetchJson<string[]>(`${base}data/nasdaq/tickers.json`).catch(() => [] as string[]),
+          fetchJson<string[]>(`${base}data/nyse/tickers.json`).catch(() => [] as string[]),
+        ]);
+
+        setNasdaqTickers((nas ?? []).map((t) => String(t).toUpperCase()));
+        setNyseTickers((ny ?? []).map((t) => t.toUpperCase()));
+      } catch {
+        setNasdaqTickers([]);
+        setNyseTickers([]);
+      }
+    })();
+  }, []);
+
+  const nasdaqSet = useMemo(() => new Set(nasdaqTickers.map((t) => t.toUpperCase())), [nasdaqTickers]);
+  const nyseSet = useMemo(() => new Set(nyseTickers.map((t) => t.toUpperCase())), [nyseTickers]);
+
+  useEffect(() => {
+    // Market selection constrains picker; it should not drop portfolio tickers.
+    // It only sets which market is currently included in calculations.
+    if (market === "NASDAQ") setActiveMarkets({ NASDAQ: true, NYSE: false });
+    else if (market === "NYSE") setActiveMarkets({ NASDAQ: false, NYSE: true });
+    else setActiveMarkets({ NASDAQ: true, NYSE: true });
+  }, [market]);
+
+  const holdingsByMarket = useMemo(() => {
+    const nas: Holding[] = [];
+    const ny: Holding[] = [];
+    const other: Holding[] = [];
+
+    for (const h of holdings) {
+      const t = h.ticker.toUpperCase();
+      const inNas = nasdaqSet.has(t);
+      const inNy = nyseSet.has(t);
+
+      if (inNas && !inNy) nas.push(h);
+      else if (inNy && !inNas) ny.push(h);
+      else if (inNas && inNy) {
+        // Rare overlap, keep under both markets for visibility.
+        nas.push(h);
+        ny.push(h);
+      } else {
+        other.push(h);
+      }
+    }
+
+    return { nas, ny, other };
+  }, [holdings, nasdaqSet, nyseSet]);
+
+  const activeTickers = useMemo(() => {
+    return tickers.filter((t0) => {
+      const t = t0.toUpperCase();
+      const inNas = nasdaqSet.has(t);
+      const inNy = nyseSet.has(t);
+
+      if (inNas && !inNy) return activeMarkets.NASDAQ;
+      if (inNy && !inNas) return activeMarkets.NYSE;
+      if (inNas && inNy) return activeMarkets.NASDAQ || activeMarkets.NYSE;
+
+      // Unknown: keep active so we never silently drop portfolio components.
+      return true;
+    });
+  }, [tickers, nasdaqSet, nyseSet, activeMarkets]);
+
+  const togglesLocked = market !== "ALL";
 
   const [computed, setComputed] = useState<{
     dates: string[];
@@ -1232,6 +1940,11 @@ export default function App() {
     const denom = totalShares || 1;
     return holdings.map((h) => ({ ticker: h.ticker, w: h.shares / denom }));
   }, [holdings, totalShares]);
+
+  const activeWeights = useMemo(() => {
+    const set = new Set(activeTickers.map((t) => t.toUpperCase()));
+    return weights.filter((w) => set.has(w.ticker.toUpperCase()));
+  }, [weights, activeTickers]);
   return (
     <div className="min-h-screen bg-panel text-ink font-sans">
       <div className="mx-auto max-w-7xl px-6 py-6">
@@ -1241,6 +1954,23 @@ export default function App() {
             <div className="sticky top-6 space-y-4">
               <div className="rounded-2xl border border-border bg-panel p-4 shadow-soft">
                 <h2 className="text-sm font-semibold">Controls</h2>
+
+                <div className="mt-3">
+                  <div className="text-xs font-semibold">Market</div>
+                  <div className="mt-2 flex items-center gap-2">
+                    <select
+                      className="rounded-xl border border-border bg-panel px-3 py-2 text-sm"
+                      value={market}
+                      onChange={(e) => setMarket(e.target.value as MarketKey)}
+                    >
+                      {MARKET_OPTIONS.map((m) => (
+                        <option key={m.key} value={m.key}>
+                          {m.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
 
                 <div className="mt-3">
                   <div className="text-xs font-semibold">Time range</div>
@@ -1269,143 +1999,389 @@ export default function App() {
               </div>
 
               <div className="rounded-2xl border border-border bg-panel p-4 shadow-soft">
-                <TickerPicker value={tickers} onChange={setTickers} />
+                <LocalTickerPicker value={tickers} onChange={setTickers} market={market} />
               </div>
 
               <div className="rounded-2xl border border-border bg-panel p-4 shadow-soft">
                 <h3 className="text-sm font-semibold">Weights editor</h3>
                 <p className="mt-1 text-xs text-muted">Edit shares (left). % updates automatically.</p>
 
-                <div className="mt-3 space-y-2">
-                  {holdings.map((h) => {
-                    const denom = Math.max(1, totalShares);
-                    const pct = (h.shares / denom) * 100;
+                <div className="mt-3 flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={togglesLocked}
+                    onClick={() => setActiveMarkets((m) => ({ ...m, NASDAQ: !m.NASDAQ }))}
+                    className={
+                      "rounded-full border px-3 py-1 text-[12px] font-semibold transition " +
+                      (activeMarkets.NASDAQ
+                        ? "border-border bg-wash text-ink"
+                        : "border-border bg-panel text-muted hover:bg-wash") +
+                      (togglesLocked ? " opacity-60 cursor-not-allowed" : "")
+                    }
+                  >
+                    NASDAQ {activeMarkets.NASDAQ ? "On" : "Off"}
+                  </button>
 
-                    const setShares = (ticker: string, shares: number) => {
-                      const v = Math.max(0, Math.round(Number.isFinite(shares) ? shares : 0));
-                      setHoldings((prev) => prev.map((x) => (x.ticker === ticker ? { ...x, shares: v } : x)));
-                    };
+                  <button
+                    type="button"
+                    disabled={togglesLocked}
+                    onClick={() => setActiveMarkets((m) => ({ ...m, NYSE: !m.NYSE }))}
+                    className={
+                      "rounded-full border px-3 py-1 text-[12px] font-semibold transition " +
+                      (activeMarkets.NYSE
+                        ? "border-border bg-wash text-ink"
+                        : "border-border bg-panel text-muted hover:bg-wash") +
+                      (togglesLocked ? " opacity-60 cursor-not-allowed" : "")
+                    }
+                  >
+                    NYSE {activeMarkets.NYSE ? "On" : "Off"}
+                  </button>
 
-                    const setPctAndRebalance = (ticker: string, pctTarget: number) => {
-                      setHoldings((prev) => {
-                        if (!prev.length) return prev;
+                  <div className="ml-auto text-[11px] text-muted">
+                    Included in analysis: <span className="font-mono">{activeTickers.length}</span>
+                  </div>
+                </div>
 
-                        const total = Math.max(
-                          1,
-                          prev.reduce((s, x) => s + (Number.isFinite(x.shares) ? x.shares : 0), 0)
-                        );
+                <div className="mt-3 space-y-4">
+                  {/* NASDAQ section */}
+                  <div>
+                    <div className="mb-2 flex items-center justify-between">
+                      <div className="text-xs font-semibold">NASDAQ</div>
+                      {!activeMarkets.NASDAQ ? (
+                        <div className="text-[11px] text-muted">Excluded from analysis</div>
+                      ) : (
+                        <div className="text-[11px] text-muted">Included</div>
+                      )}
+                    </div>
 
-                        // desired shares for selected ticker (round UP)
-                        let desired = Math.ceil((Math.max(0, Math.min(100, pctTarget)) / 100) * total);
-                        desired = Math.min(desired, total);
+                    <div className={"space-y-2 " + (!activeMarkets.NASDAQ ? "opacity-60" : "")}>
+                      {holdingsByMarket.nas.length === 0 ? (
+                        <div className="rounded-xl bg-wash px-3 py-2 text-xs text-muted">No NASDAQ tickers selected.</div>
+                      ) : (
+                        holdingsByMarket.nas.map((h) => {
+                          const denom = Math.max(1, totalShares);
+                          const pct = (h.shares / denom) * 100;
 
-                        const others = prev.filter((x) => x.ticker !== ticker);
-                        const remaining = total - desired;
+                          const setShares = (ticker: string, shares: number) => {
+                            const v = Math.max(0, Math.round(Number.isFinite(shares) ? shares : 0));
+                            setHoldings((prev) => prev.map((x) => (x.ticker === ticker ? { ...x, shares: v } : x)));
+                          };
 
-                        if (others.length === 0) {
-                          return prev.map((x) => (x.ticker === ticker ? { ...x, shares: desired } : x));
-                        }
+                          const setPctAndRebalance = (ticker: string, pctTarget: number) => {
+                            setHoldings((prev) => {
+                              if (!prev.length) return prev;
 
-                        const otherTotal = others.reduce(
-                          (s, x) => s + (Number.isFinite(x.shares) ? x.shares : 0),
-                          0
-                        );
+                              const total = Math.max(
+                                1,
+                                prev.reduce((s, x) => s + (Number.isFinite(x.shares) ? x.shares : 0), 0)
+                              );
 
-                        // Allocate remaining shares to others (proportional if possible, else equal).
-                        let alloc: { ticker: string; shares: number }[] = [];
+                              // desired shares for selected ticker (round UP)
+                              let desired = Math.ceil((Math.max(0, Math.min(100, pctTarget)) / 100) * total);
+                              desired = Math.min(desired, total);
 
-                        if (otherTotal <= 0) {
-                          const base = Math.floor(remaining / others.length);
-                          let rem = remaining - base * others.length;
-                          alloc = others
-                            .slice()
-                            .sort((a, b) => a.ticker.localeCompare(b.ticker))
-                            .map((x) => {
-                              const add = rem > 0 ? 1 : 0;
-                              if (rem > 0) rem -= 1;
-                              return { ticker: x.ticker, shares: base + add };
+                              const others = prev.filter((x) => x.ticker !== ticker);
+                              const remaining = total - desired;
+
+                              if (others.length === 0) {
+                                return prev.map((x) => (x.ticker === ticker ? { ...x, shares: desired } : x));
+                              }
+
+                              const otherTotal = others.reduce(
+                                (s, x) => s + (Number.isFinite(x.shares) ? x.shares : 0),
+                                0
+                              );
+
+                              // Allocate remaining shares to others (proportional if possible, else equal).
+                              let alloc: { ticker: string; shares: number }[] = [];
+
+                              if (otherTotal <= 0) {
+                                const base = Math.floor(remaining / others.length);
+                                let rem = remaining - base * others.length;
+                                alloc = others
+                                  .slice()
+                                  .sort((a, b) => a.ticker.localeCompare(b.ticker))
+                                  .map((x) => {
+                                    const add = rem > 0 ? 1 : 0;
+                                    if (rem > 0) rem -= 1;
+                                    return { ticker: x.ticker, shares: base + add };
+                                  });
+                              } else {
+                                const raw = others.map((x) => {
+                                  const w = (x.shares || 0) / otherTotal;
+                                  const exact = w * remaining;
+                                  return { ticker: x.ticker, floor: Math.floor(exact), frac: exact - Math.floor(exact) };
+                                });
+
+                                let used = raw.reduce((s, r) => s + r.floor, 0);
+                                let rem = remaining - used;
+
+                                // Distribute leftover by largest fractional parts.
+                                raw.sort((a, b) => b.frac - a.frac);
+                                const extras = new Map<string, number>();
+                                for (const r of raw) extras.set(r.ticker, 0);
+                                for (let i = 0; i < raw.length && rem > 0; i++) {
+                                  extras.set(raw[i].ticker, (extras.get(raw[i].ticker) ?? 0) + 1);
+                                  rem -= 1;
+                                  if (i === raw.length - 1 && rem > 0) i = -1; // loop if still remainder
+                                }
+
+                                alloc = raw.map((r) => ({
+                                  ticker: r.ticker,
+                                  shares: r.floor + (extras.get(r.ticker) ?? 0),
+                                }));
+                              }
+
+                              return prev.map((x) => {
+                                if (x.ticker === ticker) return { ...x, shares: desired };
+                                const a = alloc.find((z) => z.ticker === x.ticker);
+                                return a ? { ...x, shares: a.shares } : x;
+                              });
                             });
-                        } else {
-                          const raw = others.map((x) => {
-                            const w = (x.shares || 0) / otherTotal;
-                            const exact = w * remaining;
-                            return { ticker: x.ticker, floor: Math.floor(exact), frac: exact - Math.floor(exact) };
-                          });
+                          };
 
-                          let used = raw.reduce((s, r) => s + r.floor, 0);
-                          let rem = remaining - used;
+                          return (
+                            <div key={h.ticker} className="rounded-xl bg-wash px-3 py-2">
+                              <div className="flex items-center justify-between">
+                                <div className="font-mono text-sm">{h.ticker}</div>
+                              </div>
 
-                          // Distribute leftover by largest fractional parts.
-                          raw.sort((a, b) => b.frac - a.frac);
-                          const extras = new Map<string, number>();
-                          for (const r of raw) extras.set(r.ticker, 0);
-                          for (let i = 0; i < raw.length && rem > 0; i++) {
-                            extras.set(raw[i].ticker, (extras.get(raw[i].ticker) ?? 0) + 1);
-                            rem -= 1;
-                            if (i === raw.length - 1 && rem > 0) i = -1; // loop if still remainder
-                          }
+                              <div className="mt-2 flex items-center justify-between gap-3">
+                                <div className="flex items-center gap-2">
+                                  <label className="text-xs text-muted">Shares</label>
+                                  <input
+                                    className="w-20 rounded-lg border border-border bg-panel px-2 py-1 font-mono text-sm"
+                                    type="number"
+                                    min={0}
+                                    step={1}
+                                    value={h.shares}
+                                    onFocus={(e) => e.currentTarget.select()}
+                                    onChange={(e) => {
+                                      const v = Math.max(0, Math.round(Number(e.target.value || 0)));
+                                      setShares(h.ticker, v);
+                                    }}
+                                  />
+                                </div>
 
-                          alloc = raw.map((r) => ({
-                            ticker: r.ticker,
-                            shares: r.floor + (extras.get(r.ticker) ?? 0),
-                          }));
-                        }
+                                <div className="w-16 text-right font-mono text-sm text-muted tabular-nums">
+                                  {pct.toFixed(1)}%
+                                </div>
+                              </div>
 
-                        return prev.map((x) => {
-                          if (x.ticker === ticker) return { ...x, shares: desired };
-                          const a = alloc.find((z) => z.ticker === x.ticker);
-                          return a ? { ...x, shares: a.shares } : x;
-                        });
-                      });
-                    };
+                              <div className="mt-2">
+                                <input
+                                  className="w-full"
+                                  type="range"
+                                  min={0}
+                                  max={100}
+                                  step={1}
+                                  value={Number.isFinite(pct) ? Math.round(pct) : 0}
+                                  onChange={(e) => {
+                                    const v = Math.max(0, Math.min(100, Number(e.target.value || 0)));
+                                    setPctAndRebalance(h.ticker, v);
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
 
-                    return (
-                      <div key={h.ticker} className="rounded-xl bg-wash px-3 py-2">
-                        <div className="flex items-center justify-between">
-                          <div className="font-mono text-sm">{h.ticker}</div>
-                        </div>
+                  {/* NYSE section */}
+                  <div>
+                    <div className="mb-2 flex items-center justify-between">
+                      <div className="text-xs font-semibold">NYSE</div>
+                      {!activeMarkets.NYSE ? (
+                        <div className="text-[11px] text-muted">Excluded from analysis</div>
+                      ) : (
+                        <div className="text-[11px] text-muted">Included</div>
+                      )}
+                    </div>
 
-                        {/* Shares (integer) */}
-                        <div className="mt-2 flex items-center justify-between gap-3">
-                          <div className="flex items-center gap-2">
-                            <label className="text-xs text-muted">Shares</label>
-                    <input
-                      className="w-20 rounded-lg border border-border bg-panel px-2 py-1 font-mono text-sm"
-                      type="number"
-                      min={0}
-                      step={1}
-                      value={h.shares}
-                      onFocus={(e) => e.currentTarget.select()}
-                      onChange={(e) => {
-                        const v = Math.max(0, Math.round(Number(e.target.value || 0)));
-                        setShares(h.ticker, v);
-                      }}
-                    />
-                          </div>
+                    <div className={"space-y-2 " + (!activeMarkets.NYSE ? "opacity-60" : "")}>
+                      {holdingsByMarket.ny.length === 0 ? (
+                        <div className="rounded-xl bg-wash px-3 py-2 text-xs text-muted">No NYSE tickers selected.</div>
+                      ) : (
+                        holdingsByMarket.ny.map((h) => {
+                          const denom = Math.max(1, totalShares);
+                          const pct = (h.shares / denom) * 100;
 
-                          <div className="w-16 text-right font-mono text-sm text-muted tabular-nums">
-                            {pct.toFixed(1)}%
-                          </div>
-                        </div>
+                          const setShares = (ticker: string, shares: number) => {
+                            const v = Math.max(0, Math.round(Number.isFinite(shares) ? shares : 0));
+                            setHoldings((prev) => prev.map((x) => (x.ticker === ticker ? { ...x, shares: v } : x)));
+                          };
 
-                        {/* Slider (full width) */}
-                        <div className="mt-2">
-                          <input
-                            className="w-full"
-                            type="range"
-                            min={0}
-                            max={100}
-                            step={1}
-                            value={Number.isFinite(pct) ? Math.round(pct) : 0}
-                            onChange={(e) => {
-                              const v = Math.max(0, Math.min(100, Number(e.target.value || 0)));
-                              setPctAndRebalance(h.ticker, v);
-                            }}
-                          />
-                        </div>
+                          const setPctAndRebalance = (ticker: string, pctTarget: number) => {
+                            setHoldings((prev) => {
+                              if (!prev.length) return prev;
+
+                              const total = Math.max(
+                                1,
+                                prev.reduce((s, x) => s + (Number.isFinite(x.shares) ? x.shares : 0), 0)
+                              );
+
+                              let desired = Math.ceil((Math.max(0, Math.min(100, pctTarget)) / 100) * total);
+                              desired = Math.min(desired, total);
+
+                              const others = prev.filter((x) => x.ticker !== ticker);
+                              const remaining = total - desired;
+
+                              if (others.length === 0) {
+                                return prev.map((x) => (x.ticker === ticker ? { ...x, shares: desired } : x));
+                              }
+
+                              const otherTotal = others.reduce(
+                                (s, x) => s + (Number.isFinite(x.shares) ? x.shares : 0),
+                                0
+                              );
+
+                              let alloc: { ticker: string; shares: number }[] = [];
+
+                              if (otherTotal <= 0) {
+                                const base = Math.floor(remaining / others.length);
+                                let rem = remaining - base * others.length;
+                                alloc = others
+                                  .slice()
+                                  .sort((a, b) => a.ticker.localeCompare(b.ticker))
+                                  .map((x) => {
+                                    const add = rem > 0 ? 1 : 0;
+                                    if (rem > 0) rem -= 1;
+                                    return { ticker: x.ticker, shares: base + add };
+                                  });
+                              } else {
+                                const raw = others.map((x) => {
+                                  const w = (x.shares || 0) / otherTotal;
+                                  const exact = w * remaining;
+                                  return { ticker: x.ticker, floor: Math.floor(exact), frac: exact - Math.floor(exact) };
+                                });
+
+                                let used = raw.reduce((s, r) => s + r.floor, 0);
+                                let rem = remaining - used;
+
+                                raw.sort((a, b) => b.frac - a.frac);
+                                const extras = new Map<string, number>();
+                                for (const r of raw) extras.set(r.ticker, 0);
+                                for (let i = 0; i < raw.length && rem > 0; i++) {
+                                  extras.set(raw[i].ticker, (extras.get(raw[i].ticker) ?? 0) + 1);
+                                  rem -= 1;
+                                  if (i === raw.length - 1 && rem > 0) i = -1;
+                                }
+
+                                alloc = raw.map((r) => ({
+                                  ticker: r.ticker,
+                                  shares: r.floor + (extras.get(r.ticker) ?? 0),
+                                }));
+                              }
+
+                              return prev.map((x) => {
+                                if (x.ticker === ticker) return { ...x, shares: desired };
+                                const a = alloc.find((z) => z.ticker === x.ticker);
+                                return a ? { ...x, shares: a.shares } : x;
+                              });
+                            });
+                          };
+
+                          return (
+                            <div key={h.ticker} className="rounded-xl bg-wash px-3 py-2">
+                              <div className="flex items-center justify-between">
+                                <div className="font-mono text-sm">{h.ticker}</div>
+                              </div>
+
+                              <div className="mt-2 flex items-center justify-between gap-3">
+                                <div className="flex items-center gap-2">
+                                  <label className="text-xs text-muted">Shares</label>
+                                  <input
+                                    className="w-20 rounded-lg border border-border bg-panel px-2 py-1 font-mono text-sm"
+                                    type="number"
+                                    min={0}
+                                    step={1}
+                                    value={h.shares}
+                                    onFocus={(e) => e.currentTarget.select()}
+                                    onChange={(e) => {
+                                      const v = Math.max(0, Math.round(Number(e.target.value || 0)));
+                                      setShares(h.ticker, v);
+                                    }}
+                                  />
+                                </div>
+
+                                <div className="w-16 text-right font-mono text-sm text-muted tabular-nums">
+                                  {pct.toFixed(1)}%
+                                </div>
+                              </div>
+
+                              <div className="mt-2">
+                                <input
+                                  className="w-full"
+                                  type="range"
+                                  min={0}
+                                  max={100}
+                                  step={1}
+                                  value={Number.isFinite(pct) ? Math.round(pct) : 0}
+                                  onChange={(e) => {
+                                    const v = Math.max(0, Math.min(100, Number(e.target.value || 0)));
+                                    setPctAndRebalance(h.ticker, v);
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Unknown section (always included) */}
+                  {holdingsByMarket.other.length > 0 ? (
+                    <div>
+                      <div className="mb-2 flex items-center justify-between">
+                        <div className="text-xs font-semibold">Other</div>
+                        <div className="text-[11px] text-muted">Included</div>
                       </div>
-                    );
-                  })}
+                      <div className="space-y-2">
+                        {holdingsByMarket.other.map((h) => {
+                          const denom = Math.max(1, totalShares);
+                          const pct = (h.shares / denom) * 100;
+
+                          const setShares = (ticker: string, shares: number) => {
+                            const v = Math.max(0, Math.round(Number.isFinite(shares) ? shares : 0));
+                            setHoldings((prev) => prev.map((x) => (x.ticker === ticker ? { ...x, shares: v } : x)));
+                          };
+
+                          return (
+                            <div key={h.ticker} className="rounded-xl bg-wash px-3 py-2">
+                              <div className="flex items-center justify-between">
+                                <div className="font-mono text-sm">{h.ticker}</div>
+                              </div>
+
+                              <div className="mt-2 flex items-center justify-between gap-3">
+                                <div className="flex items-center gap-2">
+                                  <label className="text-xs text-muted">Shares</label>
+                                  <input
+                                    className="w-20 rounded-lg border border-border bg-panel px-2 py-1 font-mono text-sm"
+                                    type="number"
+                                    min={0}
+                                    step={1}
+                                    value={h.shares}
+                                    onFocus={(e) => e.currentTarget.select()}
+                                    onChange={(e) => {
+                                      const v = Math.max(0, Math.round(Number(e.target.value || 0)));
+                                      setShares(h.ticker, v);
+                                    }}
+                                  />
+                                </div>
+
+                                <div className="w-16 text-right font-mono text-sm text-muted tabular-nums">
+                                  {pct.toFixed(1)}%
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
 
                 <div className="mt-3 rounded-xl bg-wash px-3 py-2">
@@ -1476,17 +2452,17 @@ export default function App() {
               </p>
             </header>
             <div className="mb-6">
-              <TickerPriceCards tickers={tickers} rangeKey={rangeKey} placement="main" />
+              <TickerPriceCards tickers={activeTickers} rangeKey={rangeKey} market={market} placement="main" />
             </div>
 
             <div className="grid grid-cols-12 gap-6">
               <section className="col-span-12 lg:col-span-8 rounded-2xl border border-border bg-panel p-4 shadow-soft">
-                <h3 className="text-sm font-semibold">Equity curve (demo)</h3>
-                <PriceDemoChart tickers={tickers} weights={weights} rangeKey={rangeKey} onComputed={setComputed} />
+                <h3 className="text-sm font-semibold">Equity curve</h3>
+                <PriceDemoChart tickers={activeTickers} weights={activeWeights} rangeKey={rangeKey} market={market} onComputed={setComputed} />
               </section>
 
               <section className="col-span-12 lg:col-span-4 rounded-2xl border border-border bg-panel p-4 shadow-soft">
-                <h3 className="text-sm font-semibold">Drawdown (demo)</h3>
+                <h3 className="text-sm font-semibold">Drawdown</h3>
 
                 {!computed?.portfolio || computed.portfolio.length < 2 ? (
                   <div className="mt-3 text-xs text-muted">Select tickers to compute a portfolio drawdown.</div>
@@ -1563,11 +2539,12 @@ export default function App() {
               <section className="col-span-12 rounded-2xl border border-border bg-panel p-4 shadow-soft">
                 <h3 className="text-sm font-semibold">Benchmark and similar-risk winners</h3>
                 <BenchmarkAndWinnersCard
-                  portfolioTickers={tickers}
-                  portfolioWeights={weights}
+                  portfolioTickers={activeTickers}
+                  portfolioWeights={activeWeights}
                   portfolio={computed?.portfolio ?? null}
                   portfolioKpi={computed?.kpi ?? null}
                   rangeKey={rangeKey}
+                  market={market}
                 />
               </section>
             </div>
