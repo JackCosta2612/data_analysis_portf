@@ -267,7 +267,7 @@ function TickerPriceCards({
   tickers: string[];
   rangeKey: RangeKey;
   market: MarketKey;
-  placement?: "sidebar" | "main";
+  placement?: "sidebar" | "main" | "pane";
 }) {
   const [prices, setPrices] = useState<PricesDemo | null>(null);
   const [universe, setUniverse] = useState<UniverseRow[] | null>(null);
@@ -359,11 +359,6 @@ function TickerPriceCards({
     return indicesForRange(prices.dates, rangeKey);
   }, [prices, rangeKey]);
 
-  const datesR = useMemo(() => {
-    if (!prices) return [] as string[];
-    return selIdx.map((i) => prices.dates[i]).filter((d) => typeof d === "string");
-  }, [prices, selIdx]);
-
   const fmtDate = (d: string) => {
     if (!d) return d;
     if (d.includes("T")) return d.slice(0, 16).replace("T", " ");
@@ -371,8 +366,18 @@ function TickerPriceCards({
   };
 
   const LineCard = ({ t }: { t: string }) => {
+    const [hoverIdx, setHoverIdx] = useState<number | null>(null);
     const y0 = prices?.series?.[t] ?? [];
-    const yR = selIdx.map((i) => y0[i]).map((v) => (Number.isFinite(v) ? (v as number) : NaN));
+    const finiteAllIdx = y0.map((v, i) => (Number.isFinite(v) ? i : -1)).filter((i) => i >= 0);
+    const finiteSelIdx = selIdx.filter((i) => Number.isFinite(y0[i]));
+    const fallbackIdx =
+      finiteSelIdx.length < 2 && finiteAllIdx.length >= 2
+        ? finiteAllIdx.slice(Math.max(0, finiteAllIdx.length - 120))
+        : null;
+    const idx = fallbackIdx ?? selIdx;
+    const datesR = (prices?.dates ?? []).map((d) => (typeof d === "string" ? d : ""));
+    const datesSel = idx.map((i) => datesR[i] ?? "");
+    const yR = idx.map((i) => y0[i]).map((v) => (Number.isFinite(v) ? (v as number) : NaN));
     const clean = yR.filter((v) => Number.isFinite(v)) as number[];
 
     const first = Number.isFinite(yR[0]) ? (yR[0] as number) : (clean[0] ?? NaN);
@@ -385,9 +390,9 @@ function TickerPriceCards({
 
     const name = uniMap.get(t)?.name;
 
-    if (!prices || datesR.length < 2 || clean.length < 2) {
+    if (!prices || datesSel.length < 2 || clean.length < 2) {
       return (
-        <div className="rounded-2xl border border-border bg-panel p-4 shadow-soft">
+        <div className="rounded-2xl border border-border bg-panel p-4 shadow-sm shadow-slate-300/60">
           <div className="flex items-start justify-between gap-3">
             <div>
               <div className="font-mono text-sm">{t}</div>
@@ -420,27 +425,41 @@ function TickerPriceCards({
     const ymin = ymin0 - pad;
     const ymax = ymax0 + pad;
 
-    const x = (i: number) => left + (i / Math.max(1, datesR.length - 1)) * W;
+    const x = (i: number) => left + (i / Math.max(1, datesSel.length - 1)) * W;
     const y = (v: number) => top + (1 - (v - ymin) / (ymax - ymin || 1)) * H;
 
-    const dLine = yR
-      .map((v, i) => {
-        const vv = Number.isFinite(v) ? (v as number) : NaN;
-        if (!Number.isFinite(vv)) return null;
-        return `${i === 0 ? "M" : "L"} ${x(i).toFixed(2)} ${y(vv).toFixed(2)}`;
-      })
-      .filter(Boolean)
-      .join(" ");
+    const finiteIdx = yR.map((v, i) => (Number.isFinite(v) ? i : -1)).filter((i) => i >= 0);
+    const pathParts: string[] = [];
+    for (let i = 0; i < yR.length; i++) {
+      const vv = yR[i];
+      if (!Number.isFinite(vv)) continue;
+      const cmd = pathParts.length === 0 ? "M" : "L";
+      pathParts.push(`${cmd} ${x(i).toFixed(2)} ${y(vv as number).toFixed(2)}`);
+    }
+    const dLine = pathParts.join(" ");
 
     const yBase = top + H;
-    const x0 = x(0);
-    const xN = x(datesR.length - 1);
-    const dArea = `${dLine} L ${xN.toFixed(2)} ${yBase.toFixed(2)} L ${x0.toFixed(2)} ${yBase.toFixed(2)} Z`;
+    const firstIdx = finiteIdx[0] ?? 0;
+    const lastIdx = finiteIdx[finiteIdx.length - 1] ?? datesSel.length - 1;
+    const x0 = x(firstIdx);
+    const xN = x(lastIdx);
+    const dArea = dLine
+      ? `${dLine} L ${xN.toFixed(2)} ${yBase.toFixed(2)} L ${x0.toFixed(2)} ${yBase.toFixed(2)} Z`
+      : "";
 
     const clsRet = up ? "text-emerald-600" : "text-rose-600";
+    const tooltipFontSize = 14;
+    const hoverIndex = hoverIdx != null ? Math.min(hoverIdx, datesSel.length - 1) : null;
+    const hoverValue = hoverIndex != null ? yR[hoverIndex] : NaN;
+    const hoverX = hoverIndex != null ? x(hoverIndex) : 0;
+    const hoverY = Number.isFinite(hoverValue) ? y(hoverValue as number) : 0;
+    const tipWidth = 150;
+    const tipHeight = 36;
+    const tipX = hoverIndex != null ? Math.min(hoverX + 8, left + W - tipWidth) : left;
+    const tipY = hoverIndex != null ? Math.max(top, hoverY - tipHeight - 6) : top;
 
     return (
-      <div className="rounded-2xl border border-border bg-panel p-4 shadow-soft">
+      <div className="rounded-2xl border border-border bg-panel p-4 shadow-sm shadow-slate-300/60">
         <div className="flex items-start justify-between gap-3">
           <div>
             <div className="font-mono text-sm">{t}</div>
@@ -482,10 +501,43 @@ function TickerPriceCards({
                   <line x1={left} y1={top + H * 0.5} x2={left + W} y2={top + H * 0.5} stroke="#F3F4F6" />
 
                   {/* area */}
-                  <path d={dArea} fill={fill} stroke="none" />
+                  {dArea ? <path d={dArea} fill={fill} stroke="none" /> : null}
 
                   {/* line */}
                   <path d={dLine} fill="none" stroke={stroke} strokeWidth="2.25" />
+
+                  {hoverIndex != null && Number.isFinite(hoverValue) && (
+                    <>
+                      <line x1={hoverX} y1={top} x2={hoverX} y2={top + H} stroke="#CBD5E1" strokeDasharray="3 3" />
+                      <line x1={left} y1={hoverY} x2={left + W} y2={hoverY} stroke="#CBD5E1" strokeDasharray="3 3" />
+                      <circle cx={hoverX} cy={hoverY} r={3} fill={stroke} />
+                      <g>
+                        <rect x={tipX} y={tipY} width={tipWidth} height={tipHeight} rx={6} fill="#111827" opacity="0.9" />
+                        <text x={tipX + 8} y={tipY + 13} fontSize={tooltipFontSize} fill="#F9FAFB">
+                          {fmtDate(datesSel[hoverIndex] ?? "")}
+                        </text>
+                        <text x={tipX + 8} y={tipY + 27} fontSize={tooltipFontSize} fill="#F9FAFB">
+                          {Number.isFinite(hoverValue) ? (hoverValue as number).toFixed(2) : "—"}
+                        </text>
+                      </g>
+                    </>
+                  )}
+
+                  <rect
+                    x={left}
+                    y={top}
+                    width={W}
+                    height={H}
+                    fill="transparent"
+                    onMouseMove={(e) => {
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      const ratio = (e.clientX - rect.left) / rect.width;
+                      const raw = Math.round(ratio * (datesSel.length - 1));
+                      const next = Math.min(Math.max(raw, 0), Math.max(0, datesSel.length - 1));
+                      setHoverIdx(next);
+                    }}
+                    onMouseLeave={() => setHoverIdx(null)}
+                  />
                 </svg>
               </div>
 
@@ -500,8 +552,8 @@ function TickerPriceCards({
                   color: AXIS_FILL,
                 }}
               >
-                <span>{fmtDate(datesR[0])}</span>
-                <span>{fmtDate(datesR[datesR.length - 1])}</span>
+                <span>{fmtDate(datesSel[firstIdx] ?? datesSel[0])}</span>
+                <span>{fmtDate(datesSel[lastIdx] ?? datesSel[datesSel.length - 1])}</span>
               </div>
             </div>
           </div>
@@ -521,7 +573,7 @@ function TickerPriceCards({
 
   if (err) {
     return (
-      <div className="rounded-2xl border border-border bg-panel p-4 shadow-soft">
+      <div className="rounded-2xl border border-border bg-panel p-4 shadow-sm shadow-slate-300/60">
         <div className="text-sm font-semibold">Tickers</div>
         <div className="mt-2 text-xs text-red-600">
           Data load failed: <span className="font-mono">{err}</span>
@@ -537,7 +589,7 @@ function TickerPriceCards({
 
   if (!prices || !universe) {
     return (
-      <div className="rounded-2xl border border-border bg-panel p-4 shadow-soft">
+      <div className="rounded-2xl border border-border bg-panel p-4 shadow-sm shadow-slate-300/60">
         <div className="text-sm font-semibold">Tickers</div>
         <div className="mt-2 text-xs text-muted">Loading ticker charts… <span className="font-mono">{market}</span> · <span className="font-mono">{rangeKey}</span></div>
       </div>
@@ -546,7 +598,7 @@ function TickerPriceCards({
 
   if (!shown.length) {
     return (
-      <div className="rounded-2xl border border-border bg-panel p-4 shadow-soft">
+      <div className="rounded-2xl border border-border bg-panel p-4 shadow-sm shadow-slate-300/60">
         <div className="text-sm font-semibold">Tickers</div>
         <div className="mt-2 text-xs text-muted">Select tickers to see individual charts.</div>
       </div>
@@ -579,6 +631,7 @@ function PriceDemoChart({
 }) {
   const [data, setData] = useState<PricesDemo | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -749,6 +802,20 @@ function PriceDemoChart({
     "#C94C4C",
     "#556B2F",
   ];
+  const hoverSeries = portfolio ?? series[0]?.idx ?? [];
+  const hoverIndex = hoverIdx != null ? Math.min(Math.max(hoverIdx, 0), Math.max(0, dates.length - 1)) : null;
+  const hoverValue = hoverIndex != null ? hoverSeries[hoverIndex] : NaN;
+  const hoverX = hoverIndex != null ? x(hoverIndex) : 0;
+  const hoverY = Number.isFinite(hoverValue) ? y(hoverValue as number) : 0;
+  const rows = [
+    ...(portfolio ? [{ label: "PORT", color: "#1F2328", series: portfolio }] : []),
+    ...series.map((s, si) => ({ label: s.t, color: lineColors[(si + 1) % lineColors.length], series: s.idx })),
+  ];
+  const tipWidth = 190;
+  const tipLine = 12;
+  const tipHeight = 22 + rows.length * tipLine;
+  const tipX = hoverIndex != null ? Math.min(hoverX + 8, left + W - tipWidth) : left;
+  const tipY = hoverIndex != null ? Math.max(top, hoverY - tipHeight - 6) : top;
 
   return (
     <div className="mt-3">
@@ -849,6 +916,50 @@ function PriceDemoChart({
                   PORT
                 </text>
               )}
+
+              {hoverIndex != null && Number.isFinite(hoverValue) && (
+                <>
+                  <line x1={hoverX} y1={top} x2={hoverX} y2={top + H} stroke="#CBD5E1" strokeDasharray="3 3" />
+                  <line x1={left} y1={hoverY} x2={left + W} y2={hoverY} stroke="#CBD5E1" strokeDasharray="3 3" />
+                  <circle cx={hoverX} cy={hoverY} r={3} fill="#1F2328" />
+                  <g>
+                    <rect x={tipX} y={tipY} width={tipWidth} height={tipHeight} rx={6} fill="#111827" opacity="0.9" />
+                    <text x={tipX + 8} y={tipY + 12} fontSize={AXIS_FONT_SIZE} fill="#F9FAFB">
+                      {dates[hoverIndex] ?? ""}
+                    </text>
+                    {rows.map((row, i) => {
+                      const v = row.series[hoverIndex];
+                      return (
+                        <text
+                          key={row.label}
+                          x={tipX + 8}
+                          y={tipY + 12 + (i + 1) * tipLine}
+                          fontSize={AXIS_FONT_SIZE}
+                          fill="#F9FAFB"
+                        >
+                          {row.label} {Number.isFinite(v) ? (v as number).toFixed(2) : "—"}
+                        </text>
+                      );
+                    })}
+                  </g>
+                </>
+              )}
+
+              <rect
+                x={left}
+                y={top}
+                width={W}
+                height={H}
+                fill="transparent"
+                onMouseMove={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  const ratio = (e.clientX - rect.left) / rect.width;
+                  const raw = Math.round(ratio * (dates.length - 1));
+                  const next = Math.min(Math.max(raw, 0), Math.max(0, dates.length - 1));
+                  setHoverIdx(next);
+                }}
+                onMouseLeave={() => setHoverIdx(null)}
+              />
             </svg>
           </div>
 
@@ -907,6 +1018,7 @@ function BenchmarkAndWinnersCard({
   const [prices, setPrices] = useState<PricesDemo | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [benchMeta, setBenchMeta] = useState<BenchmarkMeta[]>([]);
+  const [benchHoverIdx, setBenchHoverIdx] = useState<number | null>(null);
 
   const [benchmark, setBenchmark] = useState<string>("QQQ");
 
@@ -1149,7 +1261,7 @@ function BenchmarkAndWinnersCard({
   }, [prices, benchIdx, datesR]);
 
   const winners = useMemo(() => {
-    if (!prices || !universe) return [] as (UniverseRow & { kpi: KPI; idx: number[] })[];
+    if (!prices || !universe) return [] as (UniverseRow & { kpi: KPI; idx: number[]; raw: number[] })[];
 
     const s = prices.series ?? {};
     const portfolioSet = new Set(portfolioTickers.map((t) => t.toUpperCase()));
@@ -1172,7 +1284,7 @@ function BenchmarkAndWinnersCard({
         const base = firstFinite(yR) ?? 1;
         const idx = yR.map((v) => (Number.isFinite(v) ? (base ? ((v as number) / base) * 100 : (v as number)) : NaN));
         const kpi = kpisFromIndex(idx, datesR);
-        return { ...r, kpi, idx };
+        return { ...r, kpi, idx, raw: yR };
       })
       .filter((r) => Number.isFinite(r.kpi.totalReturn));
 
@@ -1293,13 +1405,12 @@ function BenchmarkAndWinnersCard({
               </div>
             ) : (
               (() => {
-                const labelGutter = 22; // extra room for y-axis labels (prevents clipping)
-                const viewW = 760 + labelGutter;
+                const viewW = 760;
                 const viewH = 180;
-                const left = 52 + labelGutter;
+                const left = 6;
                 const right = 18;
                 const top = 14;
-                const bottom = 26;
+                const bottom = 20;
                 const W = viewW - left - right;
                 const H = viewH - top - bottom;
 
@@ -1325,61 +1436,117 @@ function BenchmarkAndWinnersCard({
                 const dBench = bench
                   .map((v, i) => `${i === 0 ? "M" : "L"} ${x(i).toFixed(2)} ${y(v).toFixed(2)}`)
                   .join(" ");
+                const hoverIndex =
+                  benchHoverIdx != null ? Math.min(Math.max(benchHoverIdx, 0), Math.max(0, dates.length - 1)) : null;
+                const hoverValue = hoverIndex != null ? port[hoverIndex] : NaN;
+                const hoverX = hoverIndex != null ? x(hoverIndex) : 0;
+                const hoverY = Number.isFinite(hoverValue) ? y(hoverValue as number) : 0;
+                const tipWidth = 190;
+                const tipLine = 12;
+                const tipHeight = 22 + tipLine * 2;
+                const tipX = hoverIndex != null ? Math.min(hoverX + 8, left + W - tipWidth) : left;
+                const tipY = hoverIndex != null ? Math.max(top, hoverY - tipHeight - 6) : top;
 
                 return (
-                  <svg
-                    viewBox={`0 0 ${viewW} ${viewH}`}
-                    className="mt-3 w-full"
-                    style={{ fontFamily: AXIS_FONT_FAMILY, fontSize: AXIS_FONT_SIZE, fill: AXIS_FILL }}
-                  >
+                  <div className="mt-3 grid grid-cols-[auto,1fr] gap-2 items-stretch">
+                    <div
+                      className="flex flex-col justify-between text-right"
+                      style={{
+                        width: 44,
+                        paddingTop: top,
+                        paddingBottom: bottom,
+                        fontFamily: AXIS_FONT_FAMILY,
+                        fontSize: AXIS_FONT_SIZE,
+                        color: AXIS_FILL,
+                      }}
+                    >
+                      {[...yTicks]
+                        .slice()
+                        .reverse()
+                        .map((tv, k) => (
+                          <div key={k} style={{ lineHeight: 1 }}>
+                            {tv.toFixed(0)}
+                          </div>
+                        ))}
+                    </div>
+
+                    <div className="min-w-0">
+                      <div className="aspect-[760/180] w-full">
+                        <svg
+                          viewBox={`0 0 ${viewW} ${viewH}`}
+                          className="h-full w-full"
+                          style={{ fontFamily: AXIS_FONT_FAMILY, fontSize: AXIS_FONT_SIZE, fill: AXIS_FILL }}
+                        >
                     {/* frame */}
                     <line x1={left} y1={top + H} x2={left + W} y2={top + H} stroke="#E5E7EB" />
                     <line x1={left} y1={top} x2={left} y2={top + H} stroke="#E5E7EB" />
 
-                    {/* y grid + labels */}
+                    {/* y grid */}
                     {yTicks.map((tv, k) => (
                       <g key={k}>
                         <line x1={left} y1={y(tv)} x2={left + W} y2={y(tv)} stroke="#F3F4F6" />
-                        <text
-                          x={left - 8}
-                          y={y(tv) + 4}
-                          textAnchor="end"
-                          fontSize={AXIS_FONT_SIZE}
-                          fill={AXIS_FILL}
-                          fontFamily={AXIS_FONT_FAMILY}
-                        >
-                          {tv.toFixed(0)}
-                        </text>
                       </g>
                     ))}
-
-                    {/* x labels (start/end) */}
-                    <text
-                      x={left}
-                      y={top + H + 18}
-                      fontSize={AXIS_FONT_SIZE}
-                      fill={AXIS_FILL}
-                      fontFamily={AXIS_FONT_FAMILY}
-                    >
-                      {dates[0]}
-                    </text>
-                    <text
-                      x={left + W}
-                      y={top + H + 18}
-                      textAnchor="end"
-                      fontSize={AXIS_FONT_SIZE}
-                      fill={AXIS_FILL}
-                      fontFamily={AXIS_FONT_FAMILY}
-                    >
-                      {dates[dates.length - 1]}
-                    </text>
 
                     {/* benchmark (dashed) */}
                     <path d={dBench} fill="none" stroke="#2563EB" strokeWidth="2" strokeDasharray="6 4" opacity="0.95" />
 
-                    {/* portfolio (solid) */}
-                    <path d={dPort} fill="none" stroke="#111827" strokeWidth="2.5" opacity="0.95" />
-                  </svg>
+                      {/* portfolio (solid) */}
+                      <path d={dPort} fill="none" stroke="#111827" strokeWidth="2.5" opacity="0.95" />
+
+                      {hoverIndex != null && Number.isFinite(hoverValue) && (
+                        <>
+                          <line x1={hoverX} y1={top} x2={hoverX} y2={top + H} stroke="#CBD5E1" strokeDasharray="3 3" />
+                          <line x1={left} y1={hoverY} x2={left + W} y2={hoverY} stroke="#CBD5E1" strokeDasharray="3 3" />
+                          <circle cx={hoverX} cy={hoverY} r={3} fill="#111827" />
+                          <g>
+                            <rect x={tipX} y={tipY} width={tipWidth} height={tipHeight} rx={6} fill="#111827" opacity="0.9" />
+                            <text x={tipX + 8} y={tipY + 13} fontSize={AXIS_FONT_SIZE} fill="#F9FAFB">
+                              {dates[hoverIndex] ?? ""}
+                            </text>
+                            <text x={tipX + 8} y={tipY + 12 + tipLine} fontSize={AXIS_FONT_SIZE} fill="#F9FAFB">
+                              PORT {Number.isFinite(port[hoverIndex]) ? port[hoverIndex].toFixed(2) : "—"}
+                            </text>
+                            <text x={tipX + 8} y={tipY + 12 + tipLine * 2} fontSize={AXIS_FONT_SIZE} fill="#F9FAFB">
+                              BENCH {Number.isFinite(bench[hoverIndex]) ? bench[hoverIndex].toFixed(2) : "—"}
+                            </text>
+                          </g>
+                        </>
+                      )}
+
+                      <rect
+                        x={left}
+                        y={top}
+                        width={W}
+                        height={H}
+                        fill="transparent"
+                        onMouseMove={(e) => {
+                          const rect = e.currentTarget.getBoundingClientRect();
+                          const ratio = (e.clientX - rect.left) / rect.width;
+                          const raw = Math.round(ratio * (dates.length - 1));
+                          const next = Math.min(Math.max(raw, 0), Math.max(0, dates.length - 1));
+                          setBenchHoverIdx(next);
+                        }}
+                        onMouseLeave={() => setBenchHoverIdx(null)}
+                      />
+                        </svg>
+                      </div>
+
+                      <div
+                        className="mt-1 flex justify-between"
+                        style={{
+                          paddingLeft: left,
+                          paddingRight: right,
+                          fontFamily: AXIS_FONT_FAMILY,
+                          fontSize: AXIS_FONT_SIZE,
+                          color: AXIS_FILL,
+                        }}
+                      >
+                        <span>{dates[0]}</span>
+                        <span>{dates[dates.length - 1]}</span>
+                      </div>
+                    </div>
+                  </div>
                 );
               })()
             )}
@@ -1435,7 +1602,7 @@ function BenchmarkAndWinnersCard({
 
                   return winners.map((r, i) => {
                     const stroke = winColors[i % winColors.length];
-                    const spark = (r.idx ?? []).map((v) => ({ value: v }));
+                    const spark = (r.raw ?? r.idx ?? []).map((v) => ({ value: v }));
 
                     const dPort =
                       portfolioKpi?.totalReturn != null ? r.kpi.totalReturn - portfolioKpi.totalReturn : null;
@@ -1448,7 +1615,7 @@ function BenchmarkAndWinnersCard({
                     };
 
                     return (
-                      <div key={r.ticker} className="rounded-2xl border border-border bg-panel p-3 shadow-soft">
+                      <div key={r.ticker} className="rounded-2xl border border-border bg-panel p-3 shadow-sm shadow-slate-300/60">
                         <div className="flex items-start justify-between gap-3">
                           <div>
                             <div className="font-mono text-sm">{r.ticker}</div>
@@ -1462,7 +1629,16 @@ function BenchmarkAndWinnersCard({
                         </div>
 
                         <div className="mt-2 rounded-xl bg-wash p-2">
-                          <Sparkline series={spark} width={260} height={70} stroke={stroke} strokeWidth={2} />
+                          <Sparkline
+                            series={spark}
+                            width={260}
+                            height={70}
+                            stroke={stroke}
+                            strokeWidth={2}
+                            xLabels={datesR}
+                            formatX={(d) => (d.includes("T") ? d.slice(0, 16).replace("T", " ") : d)}
+                            formatY={(v) => v.toFixed(2)}
+                          />
                         </div>
 
                         <div className="mt-3 grid grid-cols-3 gap-2">
@@ -1600,7 +1776,7 @@ function LocalTickerPicker({
     <div>
       <div className="flex items-center justify-between">
         <div>
-          <h3 className="text-sm font-semibold">Ticker picker</h3>
+          <h3 className="text-base font-semibold">Ticker picker</h3>
           <div className="mt-1 text-xs text-muted">Search and select tickers (local Stooq lists).</div>
         </div>
         <div className="text-[11px] text-muted">
@@ -1924,19 +2100,27 @@ export default function App() {
   }, [weights, activeTickers]);
   return (
     <div className="min-h-screen bg-panel text-ink font-sans">
-      <div className="mx-auto max-w-7xl px-6 py-6">
-        <div className="grid grid-cols-12 gap-6">
-          {/* Left panel (sticky filters) */}
-          <aside className="col-span-12 md:col-span-4 lg:col-span-3">
-            <div className="sticky top-6 space-y-4">
-              <div className="rounded-2xl border border-border bg-panel p-4 shadow-soft">
-                <h2 className="text-sm font-semibold">Controls</h2>
+      <div className="mx-auto max-w-screen-2xl px-6 py-6">
+        <div className="grid grid-cols-12 gap-x-6 gap-y-4">
+          <div className="col-span-12 lg:col-span-9">
+            <header className="mb-3">
+              <h1 className="font-display text-3xl font-semibold tracking-tight text-left">
+                Stock Portfolio Evaluation
+              </h1>
+              <p className="mt-2 text-[12px] text-muted">
+                Pick tickers and weights in the left pane, then review charts in the center.
+              </p>
+            </header>
 
-                <div className="mt-3">
-                  <div className="text-xs font-semibold">Market</div>
+            <div className="rounded-2xl border border-border bg-panel p-4 shadow-sm shadow-slate-300/60">
+              <h2 className="text-base font-semibold">Controls</h2>
+
+              <div className="mt-3 grid gap-4 md:grid-cols-2">
+                <div>
+                  <div className="text-sm font-semibold">Market</div>
                   <div className="mt-2 flex items-center gap-2">
                     <select
-                      className="rounded-xl border border-border bg-panel px-3 py-2 text-sm"
+                      className="w-full rounded-xl border border-border bg-panel px-3 py-2 text-sm"
                       value={market}
                       onChange={(e) => setMarket(e.target.value as MarketKey)}
                     >
@@ -1949,8 +2133,8 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="mt-3">
-                  <div className="text-xs font-semibold">Time range</div>
+                <div>
+                  <div className="text-sm font-semibold">Time range</div>
                   <div className="mt-2 flex flex-wrap gap-2">
                     {RANGE_OPTIONS.map((opt) => {
                       const active = opt.key === rangeKey;
@@ -1962,7 +2146,7 @@ export default function App() {
                           className={
                             "rounded-full px-3 py-1 text-[12px] font-semibold transition " +
                             (active
-                              ? "bg-gray-200 text-ink border border-border shadow-soft"
+                              ? "bg-gray-200 text-ink border border-border shadow-sm shadow-slate-300/60"
                               : "bg-panel text-ink hover:bg-wash border border-border")
                           }
                         >
@@ -1971,16 +2155,29 @@ export default function App() {
                       );
                     })}
                   </div>
-                  <div className="mt-2 text-[11px] text-muted">Applies to all charts on the right.</div>
+                  <div className="mt-2 text-[11px] text-muted">Applies to all charts in the center pane.</div>
                 </div>
               </div>
+            </div>
+          </div>
 
-              <div className="rounded-2xl border border-border bg-panel p-4 shadow-soft">
+          <section className="order-3 col-span-12 lg:order-none lg:col-span-3 lg:row-span-2 lg:row-start-1 lg:col-start-10">
+            <div className="rounded-2xl border border-border bg-panel p-4 shadow-sm shadow-slate-300/60">
+              <h3 className="text-sm font-semibold">Price charts</h3>
+              <div className="mt-3">
+                <TickerPriceCards tickers={activeTickers} rangeKey={rangeKey} market={market} placement="pane" />
+              </div>
+            </div>
+          </section>
+
+          <section className="order-1 col-span-12 lg:order-none lg:col-span-3">
+            <div className="space-y-4">
+              <div className="rounded-2xl border border-border bg-panel p-4 shadow-sm shadow-slate-300/60">
                 <LocalTickerPicker value={tickers} onChange={setTickers} market={market} />
               </div>
 
-              <div className="rounded-2xl border border-border bg-panel p-4 shadow-soft">
-                <h3 className="text-sm font-semibold">Weights editor</h3>
+              <div className="rounded-2xl border border-border bg-panel p-4 shadow-sm shadow-slate-300/60">
+                <h3 className="text-base font-semibold">Weights editor</h3>
                 <p className="mt-1 text-xs text-muted">Edit shares (left). % updates automatically.</p>
 
                 <div className="mt-3 flex items-center gap-2">
@@ -2019,11 +2216,11 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="mt-3 space-y-4">
+                <div className="mt-3 space-y-6">
                   {/* NASDAQ section */}
-                  <div>
+                  <div className="rounded-xl border border-border bg-panel/80 p-3">
                     <div className="mb-2 flex items-center justify-between">
-                      <div className="text-xs font-semibold">NASDAQ</div>
+                      <div className="text-sm font-semibold">NASDAQ</div>
                       {!activeMarkets.NASDAQ ? (
                         <div className="text-[11px] text-muted">Excluded from analysis</div>
                       ) : (
@@ -2167,9 +2364,9 @@ export default function App() {
                   </div>
 
                   {/* NYSE section */}
-                  <div>
+                  <div className="rounded-xl border border-border bg-panel/80 p-3">
                     <div className="mb-2 flex items-center justify-between">
-                      <div className="text-xs font-semibold">NYSE</div>
+                      <div className="text-sm font-semibold">NYSE</div>
                       {!activeMarkets.NYSE ? (
                         <div className="text-[11px] text-muted">Excluded from analysis</div>
                       ) : (
@@ -2311,7 +2508,7 @@ export default function App() {
 
                   {/* Unknown section (always included) */}
                   {holdingsByMarket.other.length > 0 ? (
-                    <div>
+                    <div className="rounded-xl border border-border bg-panel/80 p-3">
                       <div className="mb-2 flex items-center justify-between">
                         <div className="text-xs font-semibold">Other</div>
                         <div className="text-[11px] text-muted">Included</div>
@@ -2362,7 +2559,7 @@ export default function App() {
                 </div>
 
                 <div className="mt-3 rounded-xl bg-wash px-3 py-2">
-                  <div className="text-[11px] text-muted">Total shares</div>
+                  <div className="text-sm font-semibold text-ink">Total shares</div>
                   <div className="mt-1 flex items-center gap-2">
                     <input
                       className="w-28 rounded-lg border border-border bg-panel px-2 py-1 font-mono text-sm text-ink"
@@ -2396,7 +2593,7 @@ export default function App() {
 
                     <button
                       type="button"
-                      className="rounded-lg border border-border bg-panel px-3 py-1 text-sm font-semibold text-ink shadow-soft hover:bg-wash"
+                      className="rounded-lg border border-border bg-panel px-3 py-1 text-sm font-semibold text-ink shadow-sm shadow-slate-300/60 hover:bg-wash"
                       onClick={() => {
                         const n = Math.max(0, Math.round(Number(totalSharesDraft || 0)));
                         setTotalSharesAndRescale(n);
@@ -2409,36 +2606,24 @@ export default function App() {
                     <div className="text-[11px] text-muted">Preserves current distribution ratios.</div>
                   </div>
                 </div>
-
-                <div className="mt-3 text-[11px] text-muted">
-                  Shares and % stay in sync (slider rebalances the others).
-                </div>
               </div>
-
             </div>
-          </aside>
+          </section>
 
-          {/* Right panel (content) */}
-          <main className="col-span-12 md:col-span-8 lg:col-span-9">
-            <header className="mb-4">
-              <h1 className="font-display text-[20px] font-semibold tracking-tight">
-                Portfolio Dashboard
-              </h1>
-              <p className="mt-2 text-[12px] text-muted">
-                Select tickers and weights on the left. Charts and comparisons render here.
-              </p>
-            </header>
-            <div className="mb-6">
-              <TickerPriceCards tickers={activeTickers} rangeKey={rangeKey} market={market} placement="main" />
-            </div>
-
-            <div className="grid grid-cols-12 gap-6">
-              <section className="col-span-12 lg:col-span-8 rounded-2xl border border-border bg-panel p-4 shadow-soft">
+          <section className="order-2 col-span-12 lg:order-none lg:col-span-6">
+            <div className="space-y-4">
+              <section className="rounded-2xl border border-border bg-panel p-4 shadow-sm shadow-slate-300/60">
                 <h3 className="text-sm font-semibold">Equity curve</h3>
-                <PriceDemoChart tickers={activeTickers} weights={activeWeights} rangeKey={rangeKey} market={market} onComputed={setComputed} />
+                <PriceDemoChart
+                  tickers={activeTickers}
+                  weights={activeWeights}
+                  rangeKey={rangeKey}
+                  market={market}
+                  onComputed={setComputed}
+                />
               </section>
 
-              <section className="col-span-12 lg:col-span-4 rounded-2xl border border-border bg-panel p-4 shadow-soft">
+              <section className="rounded-2xl border border-border bg-panel p-4 shadow-sm shadow-slate-300/60">
                 <h3 className="text-sm font-semibold">Drawdown</h3>
 
                 {!computed?.portfolio || computed.portfolio.length < 2 ? (
@@ -2481,7 +2666,16 @@ export default function App() {
                         <div className="text-[11px] text-muted">Negative % from peak (higher is better).</div>
 
                         <div className="mt-2 rounded-xl bg-wash p-3">
-                          <Sparkline series={ddPts} width={520} height={120} stroke="#1F2328" strokeWidth={2} />
+                          <Sparkline
+                            series={ddPts}
+                            width={520}
+                            height={120}
+                            stroke="#1F2328"
+                            strokeWidth={2}
+                            xLabels={computed?.dates ?? []}
+                            formatX={(d) => (d.includes("T") ? d.slice(0, 16).replace("T", " ") : d)}
+                            formatY={(v) => `${v.toFixed(2)}%`}
+                          />
                         </div>
 
                         <div className="mt-4 grid grid-cols-2 gap-3">
@@ -2504,7 +2698,7 @@ export default function App() {
                         </div>
 
                         <div className="mt-3 text-[11px] text-muted">
-                          Avg drawdown: <span className="font-mono text-ink">{formatPct(avgDD)}</span> · Current streak: {" "}
+                          Avg drawdown: <span className="font-mono text-ink">{formatPct(avgDD)}</span> · Current streak:{" "}
                           <span className="font-mono text-ink">{currentLen} pts</span>
                         </div>
                       </div>
@@ -2513,7 +2707,7 @@ export default function App() {
                 )}
               </section>
 
-              <section className="col-span-12 rounded-2xl border border-border bg-panel p-4 shadow-soft">
+              <section className="rounded-2xl border border-border bg-panel p-4 shadow-sm shadow-slate-300/60">
                 <h3 className="text-sm font-semibold">Benchmark and similar-risk winners</h3>
                 <BenchmarkAndWinnersCard
                   portfolioTickers={activeTickers}
@@ -2525,12 +2719,12 @@ export default function App() {
                 />
               </section>
             </div>
-
-            <footer className="mt-6 text-xs text-muted">
-              Deployed at <span className="font-mono">/data_analysis_portf/</span> (GitHub Pages).
-            </footer>
-          </main>
+          </section>
         </div>
+
+        <footer className="mt-6 text-xs text-muted">
+          Deployed at <span className="font-mono">/data_analysis_portf/</span> (GitHub Pages).
+        </footer>
       </div>
     </div>
   );

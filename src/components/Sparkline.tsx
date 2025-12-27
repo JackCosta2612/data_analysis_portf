@@ -15,6 +15,9 @@ type Props = {
   showEndpoints?: boolean;
   responsive?: boolean;
   labelFontSize?: number;
+  xLabels?: string[];
+  formatX?: (label: string) => string;
+  formatY?: (value: number) => string;
 };
 
 function buildPath(values: number[], w: number, h: number, pad: number, xOffset: number) {
@@ -50,12 +53,16 @@ export default function Sparkline({
   showEndpoints = true,
   responsive = true,
   labelFontSize = 10,
+  xLabels,
+  formatX,
+  formatY,
 }: Props) {
   const vals = series.map((p) => p.value).filter((v) => Number.isFinite(v));
   if (vals.length < 2) return null;
 
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const [wrapWidth, setWrapWidth] = useState<number | null>(null);
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 
   useEffect(() => {
     if (!responsive) return;
@@ -108,6 +115,17 @@ export default function Sparkline({
     "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace";
   const labelFontWeight = 500;
 
+  const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
+
+  const hoverPoint = hoverIdx != null ? pts[hoverIdx] : null;
+  const tooltipFontSize = Math.max(12, labelFontSize + 2);
+  const tipWidth = 86;
+  const tipHeight = 32;
+  const tipX = hoverPoint
+    ? clamp(hoverPoint.x + 8, x0 + pad, x0 + plotW - pad - tipWidth)
+    : x0 + pad;
+  const tipY = hoverPoint ? clamp(hoverPoint.y - tipHeight - 6, pad, height - pad - tipHeight) : pad;
+
   return (
     <div ref={wrapRef} style={{ width: "100%" }}>
       <svg
@@ -146,6 +164,23 @@ export default function Sparkline({
         {/* path */}
         <path d={d} fill="none" stroke={stroke} strokeWidth={strokeWidth} />
 
+        {hoverPoint && (
+          <>
+            <line x1={hoverPoint.x} y1={pad} x2={hoverPoint.x} y2={height - pad} stroke="#CBD5E1" strokeDasharray="3 3" />
+            <line x1={leftX} y1={hoverPoint.y} x2={rightX} y2={hoverPoint.y} stroke="#CBD5E1" strokeDasharray="3 3" />
+            <circle cx={hoverPoint.x} cy={hoverPoint.y} r={3} fill={stroke} />
+            <g>
+              <rect x={tipX} y={tipY} width={tipWidth} height={tipHeight} rx={6} fill="#111827" opacity="0.9" />
+              <text x={tipX + 8} y={tipY + 13} fontSize={tooltipFontSize} fill="#F9FAFB">
+                {xLabels?.[hoverIdx!] ? (formatX ? formatX(xLabels[hoverIdx!]) : xLabels[hoverIdx!]) : `x ${hoverIdx! + 1}`}
+              </text>
+              <text x={tipX + 8} y={tipY + 26} fontSize={tooltipFontSize} fill="#F9FAFB">
+                {formatY ? formatY(hoverPoint.v) : `y ${hoverPoint.v.toFixed(2)}`}
+              </text>
+            </g>
+          </>
+        )}
+
         {showEndpoints && (
           <>
             <circle cx={pts[0].x} cy={pts[0].y} r={2.5} fill={stroke} />
@@ -177,6 +212,23 @@ export default function Sparkline({
             </text>
           </>
         )}
+
+        <rect
+          x={x0}
+          y={0}
+          width={plotW}
+          height={height}
+          fill="transparent"
+          onMouseMove={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            const ratio = (e.clientX - rect.left) / rect.width;
+            const relX = x0 + ratio * plotW;
+            const innerX = clamp(relX, leftX, rightX) - leftX;
+            const idx = Math.round((innerX / Math.max(1, rightX - leftX)) * (pts.length - 1));
+            setHoverIdx(clamp(idx, 0, pts.length - 1));
+          }}
+          onMouseLeave={() => setHoverIdx(null)}
+        />
       </svg>
     </div>
   );
