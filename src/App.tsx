@@ -79,6 +79,13 @@ const AXIS_FONT_FAMILY =
 const AXIS_FONT_SIZE = 10;
 const AXIS_FILL = "#4B5563";
 
+function firstFinite(xs: number[]): number | null {
+  for (const v of xs) {
+    if (Number.isFinite(v)) return v as number;
+  }
+  return null;
+}
+
 function formatPct(x: number) {
   const v = x * 100;
   const s = (Math.round(v * 10) / 10).toFixed(1);
@@ -126,15 +133,17 @@ function TickerPriceCards({
 
   useEffect(() => {
     const base = import.meta.env.BASE_URL || "/";
-    const uPrices = `${base}data/prices_demo.json`;
+    const uPricesReal = `${base}data/prices.json`;
+    const uPricesDemo = `${base}data/prices_demo.json`;
     const uUniverse = `${base}data/universe.json`;
 
     (async () => {
       try {
         setErr(null);
-        const [rP, rU] = await Promise.all([fetch(uPrices), fetch(uUniverse)]);
+        const [rP0, rU] = await Promise.all([fetch(uPricesReal), fetch(uUniverse)]);
+        const rP = rP0.ok ? rP0 : await fetch(uPricesDemo);
         if (!rP.ok || !rU.ok) {
-          throw new Error(`Fetch failed: prices=${rP.status} universe=${rU.status} (base=${base})`);
+          throw new Error(`Fetch failed: prices(real=${rP0.status}, demo=${rP.status}) universe=${rU.status} (base=${base})`);
         }
         setPrices((await rP.json()) as PricesDemo);
         setUniverse((await rU.json()) as UniverseRow[]);
@@ -371,13 +380,15 @@ function PriceDemoChart({
 
   useEffect(() => {
     const base = import.meta.env.BASE_URL || "/";
-    const url = `${base}data/prices_demo.json`;
+    const urlReal = `${base}data/prices.json`;
+    const urlDemo = `${base}data/prices_demo.json`;
 
     (async () => {
       try {
         setErr(null);
-        const r = await fetch(url);
-        if (!r.ok) throw new Error(`Fetch failed: ${r.status} (${url})`);
+        const r0 = await fetch(urlReal);
+        const r = r0.ok ? r0 : await fetch(urlDemo);
+        if (!r.ok) throw new Error(`Fetch failed: real=${r0.status} demo=${r.status} (base=${base})`);
         setData((await r.json()) as PricesDemo);
       } catch (e) {
         setErr(e instanceof Error ? e.message : String(e));
@@ -407,7 +418,7 @@ function PriceDemoChart({
     return shown.map((t) => {
       const y = data.series[t] ?? [];
       const yR = selIdx.map((i) => y[i]).map((v) => (Number.isFinite(v) ? (v as number) : NaN));
-      const base = Number.isFinite(yR[0]) ? (yR[0] as number) : 1;
+      const base = firstFinite(yR) ?? 1;
       const idx = yR.map((v) => (Number.isFinite(v) ? (base ? ((v as number) / base) * 100 : (v as number)) : NaN));
       return { t, idx };
     });
@@ -675,14 +686,16 @@ function BenchmarkAndWinnersCard({
   useEffect(() => {
     const base = import.meta.env.BASE_URL || "/";
     const uUniverse = `${base}data/universe.json`;
-    const uPrices = `${base}data/prices_demo.json`;
+    const uPricesReal = `${base}data/prices.json`;
+    const uPricesDemo = `${base}data/prices_demo.json`;
 
     (async () => {
       try {
         setErr(null);
-        const [rU, rP] = await Promise.all([fetch(uUniverse), fetch(uPrices)]);
+        const [rU, rP0] = await Promise.all([fetch(uUniverse), fetch(uPricesReal)]);
+        const rP = rP0.ok ? rP0 : await fetch(uPricesDemo);
         if (!rU.ok || !rP.ok) {
-          throw new Error(`Fetch failed: universe=${rU.status} prices=${rP.status} (base=${base})`);
+          throw new Error(`Fetch failed: universe=${rU.status} prices(real=${rP0.status}, demo=${rP.status}) (base=${base})`);
         }
         setUniverse((await rU.json()) as UniverseRow[]);
         setPrices((await rP.json()) as PricesDemo);
@@ -755,7 +768,7 @@ function BenchmarkAndWinnersCard({
     const yR = selIdx.map((i) => y[i]).map((v) => (Number.isFinite(v) ? (v as number) : NaN));
     if (yR.length < 2) return null;
 
-    const base = Number.isFinite(yR[0]) ? (yR[0] as number) : 1;
+    const base = firstFinite(yR) ?? 1;
     return yR.map((v) => (Number.isFinite(v) ? (base ? ((v as number) / base) * 100 : (v as number)) : NaN));
   }, [prices, benchmark, selIdx]);
 
@@ -781,7 +794,7 @@ function BenchmarkAndWinnersCard({
       .map((r) => {
         const y = s[r.ticker] ?? [];
         const yR = selIdx.map((i) => y[i]).map((v) => (Number.isFinite(v) ? (v as number) : NaN));
-        const base = Number.isFinite(yR[0]) ? (yR[0] as number) : 1;
+        const base = firstFinite(yR) ?? 1;
         const idx = yR.map((v) => (Number.isFinite(v) ? (base ? ((v as number) / base) * 100 : (v as number)) : NaN));
         const kpi = kpisFromIndex(idx, datesR);
         return { ...r, kpi, idx };
