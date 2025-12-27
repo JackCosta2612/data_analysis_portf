@@ -2155,7 +2155,6 @@ export default function App() {
                       );
                     })}
                   </div>
-                  <div className="mt-2 text-[11px] text-muted">Applies to all charts in the center pane.</div>
                 </div>
               </div>
             </div>
