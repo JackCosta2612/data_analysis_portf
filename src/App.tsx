@@ -275,6 +275,8 @@ function TickerPriceCards({
   const [source, setSource] = useState<string>("");
 
   useEffect(() => {
+    let cancelled = false;
+
     const base = import.meta.env.BASE_URL || "/";
     const freq = priceFreq(rangeKey);
 
@@ -282,6 +284,7 @@ function TickerPriceCards({
 
     (async () => {
       try {
+        if (cancelled) return;
         setErr(null);
 
         const [uni, files] = await Promise.all([
@@ -297,6 +300,7 @@ function TickerPriceCards({
             for (const t of wanted) {
               try {
                 const res = await loadTickerFile({ base, market, freq, ticker: t });
+                if (cancelled) return [] as TickerSeriesFile[];
                 out.push({
                   ticker: t,
                   dates: res.file.dates,
@@ -309,10 +313,12 @@ function TickerPriceCards({
               }
             }
 
-            if (anyUrl) setSource(anyUrl);
+            if (!cancelled && anyUrl) setSource(anyUrl);
             return out;
           })(),
         ]);
+
+        if (cancelled) return;
 
         setUniverse(uni);
 
@@ -323,12 +329,17 @@ function TickerPriceCards({
 
         setPrices(buildPricesDemoFromTickerFiles(files));
       } catch (e) {
+        if (cancelled) return;
         setErr(e instanceof Error ? e.message : String(e));
         setPrices(null);
         setUniverse(null);
         setSource("");
       }
     })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [market, rangeKey, tickers, placement]);
 
   const uniMap = useMemo(() => {
@@ -542,16 +553,9 @@ function TickerPriceCards({
     );
   }
 
-  const seriesCount = prices ? Object.keys(prices.series ?? {}).length : 0;
 
   return (
     <div>
-      {placement === "main" ? (
-        <div className="mb-2 text-[11px] text-muted">
-          Data: <span className="font-mono">{source ? source.split("/").slice(-1)[0] : "(unknown)"}</span> · Series: <span className="font-mono">{seriesCount}</span>
-        </div>
-      ) : null}
-
       <div className={placement === "main" ? "grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3" : "space-y-4"}>
         {shown.map((t) => (
           <LineCard key={t} t={t} />
@@ -575,7 +579,6 @@ function PriceDemoChart({
 }) {
   const [data, setData] = useState<PricesDemo | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [source, setSource] = useState<string>("");
 
   useEffect(() => {
     let cancelled = false;
@@ -587,11 +590,9 @@ function PriceDemoChart({
       try {
         if (cancelled) return;
         setErr(null);
-        setSource("");
 
         const wanted = tickers.map((t) => t.toUpperCase());
         const files: TickerSeriesFile[] = [];
-        let anyUrl = "";
 
         for (const t of wanted) {
           try {
@@ -603,7 +604,6 @@ function PriceDemoChart({
               close: res.file.close,
               intervalMinutes: res.file.intervalMinutes,
             });
-            anyUrl = res.usedUrl;
           } catch {
             // ignore missing tickers
           }
@@ -617,12 +617,10 @@ function PriceDemoChart({
         }
 
         setData(buildPricesDemoFromTickerFiles(files));
-        if (anyUrl) setSource(anyUrl);
       } catch (e) {
         if (cancelled) return;
         setErr(e instanceof Error ? e.message : String(e));
         setData(null);
-        setSource("");
       }
     })();
 
@@ -887,10 +885,6 @@ function PriceDemoChart({
           </div>
         </div>
       )}
-
-      <div className="mt-3 text-[11px] text-muted">
-        Using local JSON prices. Source: <span className="font-mono">{source ? source.split("/").slice(-1)[0] : "(unknown)"}</span>
-      </div>
     </div>
   );
 }
@@ -912,7 +906,6 @@ function BenchmarkAndWinnersCard({
   const [universe, setUniverse] = useState<UniverseRow[] | null>(null);
   const [prices, setPrices] = useState<PricesDemo | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [source, setSource] = useState<string>("");
   const [benchMeta, setBenchMeta] = useState<BenchmarkMeta[]>([]);
 
   const [benchmark, setBenchmark] = useState<string>("QQQ");
@@ -929,7 +922,6 @@ function BenchmarkAndWinnersCard({
       try {
         if (cancelled) return;
         setErr(null);
-        setSource("");
 
         const [uni, bmRaw] = await Promise.all([
           fetchJson<UniverseRow[]>(uUniverse),
@@ -956,7 +948,6 @@ function BenchmarkAndWinnersCard({
         for (const r of uni) neededStocks.add(String(r.ticker).toUpperCase());
 
         const stockFiles: TickerSeriesFile[] = [];
-        let anyUrl = "";
 
         for (const t of neededStocks) {
           try {
@@ -969,7 +960,6 @@ function BenchmarkAndWinnersCard({
               close: res.file.close,
               intervalMinutes: res.file.intervalMinutes,
             });
-            anyUrl = res.usedUrl;
           } catch {
             // ignore missing
           }
@@ -987,7 +977,6 @@ function BenchmarkAndWinnersCard({
               close: res.file.close,
               intervalMinutes: res.file.intervalMinutes,
             });
-            anyUrl = anyUrl || res.usedUrl;
           } catch {
             // ignore missing
           }
@@ -1003,14 +992,12 @@ function BenchmarkAndWinnersCard({
         }
 
         setPrices(buildPricesDemoFromTickerFiles(files));
-        if (anyUrl) setSource(anyUrl);
       } catch (e) {
         if (cancelled) return;
         setErr(e instanceof Error ? e.message : String(e));
         setUniverse(null);
         setBenchMeta([]);
         setPrices(null);
-        setSource("");
       }
     })();
 
@@ -1507,9 +1494,7 @@ function BenchmarkAndWinnersCard({
             )}
           </div>
 
-          <div className="mt-4 text-[11px] text-muted">
-            Universe metadata from <span className="font-mono">universe.json</span>. Prices source: <span className="font-mono">{source ? source.split("/").slice(-1)[0] : "(unknown)"}</span>.
-          </div>
+
         </>
       )}
     </div>
@@ -1528,7 +1513,6 @@ function LocalTickerPicker({
   const [options, setOptions] = useState<string[]>([]);
   const [q, setQ] = useState<string>("");
   const [err, setErr] = useState<string | null>(null);
-  const [src, setSrc] = useState<string>("");
   const [browseOpen, setBrowseOpen] = useState(false);
   const [browseCount, setBrowseCount] = useState(400);
 
@@ -1538,7 +1522,6 @@ function LocalTickerPicker({
     (async () => {
       try {
         setErr(null);
-        setSrc("");
 
         const url =
           market === "ALL"
@@ -1552,11 +1535,9 @@ function LocalTickerPicker({
           .sort((a, b) => a.localeCompare(b));
 
         setOptions(cleaned);
-        setSrc(url);
       } catch (e) {
         setErr(e instanceof Error ? e.message : String(e));
         setOptions([]);
-        setSrc("");
       }
     })();
   }, [market]);
@@ -1716,11 +1697,7 @@ function LocalTickerPicker({
           ) : null}
         </div>
 
-        {src ? (
-          <div className="mt-2 text-[11px] text-muted">
-            Source: <span className="font-mono">{src.split("/").slice(-2).join("/")}</span>
-          </div>
-        ) : null}
+
       </div>
 
       {value.length > 0 ? (
