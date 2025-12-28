@@ -1793,7 +1793,6 @@ function LocalTickerPicker({
           value={q}
           onChange={(e) => {
             setQ(e.target.value);
-            setBrowseOpen(true);
           }}
           onKeyDown={(e) => {
             if (e.key === "Enter" && filtered.length) add(filtered[0]);
