@@ -607,7 +607,7 @@ function TickerPriceCards({
 
 
   return (
-    <div>
+    <div id={placement === "pane" ? "tour-prices-cards" : undefined}>
       <div className={placement === "main" ? "grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3" : "space-y-4"}>
         {shown.map((t) => (
           <LineCard key={t} t={t} />
@@ -1996,6 +1996,10 @@ export default function App() {
     portfolio: number[] | null;
     kpi: KPI | null;
   } | null>(null);
+  const [showTutorial, setShowTutorial] = useState(true);
+  const [tutorialStep, setTutorialStep] = useState(0);
+  const [tutorialRect, setTutorialRect] = useState<DOMRect | null>(null);
+  const [tutorialBoxPos, setTutorialBoxPos] = useState<{ top: number; left: number }>({ top: 80, left: 24 });
 
   // keep holdings in sync with ticker picker:
   // - when a ticker is added: default shares=1
@@ -2025,6 +2029,120 @@ export default function App() {
       return next;
     });
   }, [tickers]);
+
+  const tutorialSteps = useMemo(
+    () => [
+      {
+        id: "tour-header",
+        title: "Welcome to the dashboard",
+        body: "This overview shows your portfolio performance and comparisons. Use the panels below to explore.",
+      },
+      {
+        id: "tour-controls",
+        title: "Controls",
+        body: "Choose the market universe and time range. This updates all center charts.",
+      },
+      {
+        id: "tour-picker",
+        title: "Ticker picker",
+        body: "Search, browse, and add tickers to build the portfolio universe.",
+      },
+      {
+        id: "tour-weights",
+        title: "Weights editor",
+        body: "Edit shares or use sliders to rebalance weights. Total shares can rescale everything at once.",
+      },
+      {
+        id: "tour-equity",
+        title: "Equity curve",
+        body: "Compare normalized growth of each ticker and the portfolio over time.",
+      },
+      {
+        id: "tour-drawdown",
+        title: "Drawdown",
+        body: "See peak-to-trough declines and the duration of drawdown periods.",
+      },
+      {
+        id: "tour-benchmark",
+        title: "Benchmark & winners",
+        body: "Compare the portfolio to a benchmark and discover similar-risk winners.",
+      },
+      {
+        id: "tour-prices-cards",
+        title: "Price charts",
+        body: "Sparkline panels show individual ticker price moves and recent ranges.",
+      },
+    ],
+    []
+  );
+
+  useEffect(() => {
+    const updateRect = () => {
+      if (!showTutorial) return;
+      const step = tutorialSteps[tutorialStep];
+      const el = step ? document.getElementById(step.id) : null;
+      if (!el) {
+        setTutorialRect(null);
+        return;
+      }
+      setTutorialRect(el.getBoundingClientRect());
+    };
+
+    updateRect();
+    window.addEventListener("resize", updateRect);
+    window.addEventListener("scroll", updateRect, true);
+    return () => {
+      window.removeEventListener("resize", updateRect);
+      window.removeEventListener("scroll", updateRect, true);
+    };
+  }, [showTutorial, tutorialStep, tutorialSteps]);
+
+  useEffect(() => {
+    if (!showTutorial) return;
+    const step = tutorialSteps[tutorialStep];
+    const el = step ? document.getElementById(step.id) : null;
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+    const id = window.setTimeout(() => {
+      const rect = el.getBoundingClientRect();
+      setTutorialRect(rect);
+    }, 250);
+    return () => window.clearTimeout(id);
+  }, [showTutorial, tutorialStep, tutorialSteps]);
+
+  useEffect(() => {
+    if (!showTutorial || !tutorialRect) return;
+    const pad = 16;
+    const boxW = 360;
+    const boxH = 190;
+    const viewportW = window.innerWidth;
+    const viewportH = window.innerHeight;
+    const above = tutorialRect.top - pad - boxH;
+    const below = viewportH - (tutorialRect.bottom + pad) - boxH;
+    const leftSpace = tutorialRect.left - pad - boxW;
+    const rightSpace = viewportW - (tutorialRect.right + pad) - boxW;
+
+    let top = tutorialRect.bottom + pad;
+    let left = tutorialRect.left;
+
+    if (below >= 0) {
+      top = tutorialRect.bottom + pad;
+      left = tutorialRect.left;
+    } else if (above >= 0) {
+      top = tutorialRect.top - pad - boxH;
+      left = tutorialRect.left;
+    } else if (rightSpace >= 0) {
+      top = tutorialRect.top;
+      left = tutorialRect.right + pad;
+    } else if (leftSpace >= 0) {
+      top = tutorialRect.top;
+      left = tutorialRect.left - pad - boxW;
+    }
+
+    top = Math.min(Math.max(12, top), viewportH - boxH - 12);
+    left = Math.min(Math.max(12, left), viewportW - boxW - 12);
+    setTutorialBoxPos({ top, left });
+  }, [showTutorial, tutorialRect]);
 
   const totalShares = useMemo(
     () => holdings.reduce((s, h) => s + (Number.isFinite(h.shares) ? h.shares : 0), 0),
@@ -2100,9 +2218,73 @@ export default function App() {
   }, [weights, activeTickers]);
   return (
     <div className="min-h-screen bg-panel text-ink font-sans">
+      {showTutorial && tutorialSteps[tutorialStep] && (
+        <div className="fixed inset-0 z-50">
+          {tutorialRect && (
+            <div
+              className="absolute rounded-2xl border-2 border-white shadow-[0_0_0_9999px_rgba(0,0,0,0.85)]"
+              style={{
+                top: Math.max(8, tutorialRect.top - 6),
+                left: Math.max(8, tutorialRect.left - 6),
+                width: Math.max(0, tutorialRect.width + 12),
+                height: Math.max(0, tutorialRect.height + 12),
+              }}
+            />
+          )}
+          <div
+            className="absolute max-w-sm rounded-2xl border border-black/10 bg-white p-4 text-black shadow-lg"
+            style={{
+              top: tutorialBoxPos.top,
+              left: tutorialBoxPos.left,
+            }}
+          >
+            <div className="text-xs font-semibold text-black/70">
+              Tutorial {tutorialStep + 1} / {tutorialSteps.length}
+            </div>
+            <div className="mt-1 text-base font-semibold text-black">{tutorialSteps[tutorialStep].title}</div>
+            <div className="mt-2 text-sm text-black/80">{tutorialSteps[tutorialStep].body}</div>
+            <div className="mt-4 flex items-center justify-between">
+              <button
+                type="button"
+                className="text-xs font-semibold text-black/70 hover:text-black"
+                onClick={() => setShowTutorial(false)}
+              >
+                Skip
+              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="rounded-full border border-black/20 bg-white px-3 py-1 text-xs font-semibold text-black hover:bg-gray-100 disabled:opacity-50"
+                  onClick={() => setTutorialStep((s) => Math.max(0, s - 1))}
+                  disabled={tutorialStep === 0}
+                >
+                  Back
+                </button>
+                {tutorialStep === tutorialSteps.length - 1 ? (
+                  <button
+                    type="button"
+                    className="rounded-full border border-black bg-black px-3 py-1 text-xs font-semibold text-white hover:bg-black/90"
+                    onClick={() => setShowTutorial(false)}
+                  >
+                    Done
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="rounded-full border border-black bg-black px-3 py-1 text-xs font-semibold text-white hover:bg-black/90"
+                    onClick={() => setTutorialStep((s) => Math.min(tutorialSteps.length - 1, s + 1))}
+                  >
+                    Next
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="mx-auto max-w-screen-2xl px-6 py-6">
         <div className="grid grid-cols-12 gap-x-6 gap-y-4">
-          <div className="col-span-12 lg:col-span-9">
+          <div className="col-span-12 lg:col-span-9" id="tour-header">
             <header className="mb-3">
               <h1 className="font-display text-3xl font-semibold tracking-tight text-left">
                 Stock Portfolio Evaluation
@@ -2112,7 +2294,10 @@ export default function App() {
               </p>
             </header>
 
-            <div className="rounded-2xl border border-border bg-panel p-4 shadow-sm shadow-slate-300/60">
+            <div
+              className="rounded-2xl border border-border bg-panel p-4 shadow-sm shadow-slate-300/60"
+              id="tour-controls"
+            >
               <h2 className="text-base font-semibold">Controls</h2>
 
               <div className="mt-3 grid gap-4 md:grid-cols-2">
@@ -2160,7 +2345,10 @@ export default function App() {
             </div>
           </div>
 
-          <section className="order-3 col-span-12 lg:order-none lg:col-span-3 lg:row-span-2 lg:row-start-1 lg:col-start-10">
+          <section
+            className="order-3 col-span-12 lg:order-none lg:col-span-3 lg:row-span-2 lg:row-start-1 lg:col-start-10"
+            id="tour-prices"
+          >
             <div className="rounded-2xl border border-border bg-panel p-4 shadow-sm shadow-slate-300/60">
               <h3 className="text-sm font-semibold">Price charts</h3>
               <div className="mt-3">
@@ -2171,11 +2359,17 @@ export default function App() {
 
           <section className="order-1 col-span-12 lg:order-none lg:col-span-3">
             <div className="space-y-4">
-              <div className="rounded-2xl border border-border bg-panel p-4 shadow-sm shadow-slate-300/60">
+              <div
+                className="rounded-2xl border border-border bg-panel p-4 shadow-sm shadow-slate-300/60"
+                id="tour-picker"
+              >
                 <LocalTickerPicker value={tickers} onChange={setTickers} market={market} />
               </div>
 
-              <div className="rounded-2xl border border-border bg-panel p-4 shadow-sm shadow-slate-300/60">
+              <div
+                className="rounded-2xl border border-border bg-panel p-4 shadow-sm shadow-slate-300/60"
+                id="tour-weights"
+              >
                 <h3 className="text-base font-semibold">Weights editor</h3>
                 <p className="mt-1 text-xs text-muted">Edit shares (left). % updates automatically.</p>
 
@@ -2611,7 +2805,10 @@ export default function App() {
 
           <section className="order-2 col-span-12 lg:order-none lg:col-span-6">
             <div className="space-y-4">
-              <section className="rounded-2xl border border-border bg-panel p-4 shadow-sm shadow-slate-300/60">
+              <section
+                className="rounded-2xl border border-border bg-panel p-4 shadow-sm shadow-slate-300/60"
+                id="tour-equity"
+              >
                 <h3 className="text-sm font-semibold">Equity curve</h3>
                 <PriceDemoChart
                   tickers={activeTickers}
@@ -2622,7 +2819,10 @@ export default function App() {
                 />
               </section>
 
-              <section className="rounded-2xl border border-border bg-panel p-4 shadow-sm shadow-slate-300/60">
+              <section
+                className="rounded-2xl border border-border bg-panel p-4 shadow-sm shadow-slate-300/60"
+                id="tour-drawdown"
+              >
                 <h3 className="text-sm font-semibold">Drawdown</h3>
 
                 {!computed?.portfolio || computed.portfolio.length < 2 ? (
@@ -2706,7 +2906,10 @@ export default function App() {
                 )}
               </section>
 
-              <section className="rounded-2xl border border-border bg-panel p-4 shadow-sm shadow-slate-300/60">
+              <section
+                className="rounded-2xl border border-border bg-panel p-4 shadow-sm shadow-slate-300/60"
+                id="tour-benchmark"
+              >
                 <h3 className="text-sm font-semibold">Benchmark and similar-risk winners</h3>
                 <BenchmarkAndWinnersCard
                   portfolioTickers={activeTickers}
